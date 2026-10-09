@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="zh-CN" data-immersive-translate-page-theme="light"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Qwen/Kimi 混合注意力与 DeepSeek-V4 KV cache：vLLM 与 SGLang</title>
+  <style>
+    :root {
+      --bg:#f5f7fb; --paper:#fff; --ink:#172337; --muted:#526078;
+      --line:#dce3ee; --blue:#245eea; --soft:#eef4ff;
+      --warn:#fff7e6; --green:#eaf7ef;
+    }
+    * { box-sizing:border-box; }
+    body {
+      margin:0; background:var(--bg); color:var(--ink);
+      font:16px/1.8 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+    }
+    main { max-width:1160px; margin:auto; padding:42px 24px 72px; }
+    header { margin-bottom:28px; }
+    h1 { font-size:clamp(27px,4vw,41px); line-height:1.3; margin:12px 0; }
+    h2 { margin:0 0 18px; font-size:25px; }
+    h3 { margin:25px 0 10px; font-size:19px; }
+    p { margin:10px 0; }
+    .eyebrow { color:var(--blue); font-weight:700; letter-spacing:.06em; }
+    .muted, small { color:var(--muted); }
+    section {
+      margin:22px 0; padding:28px; background:var(--paper);
+      border:1px solid var(--line); border-radius:14px;
+    }
+    .note { padding:15px 19px; border-radius:9px; background:var(--soft); margin:16px 0; }
+    .cache-note { font-size:15px; border-left:3px solid var(--line); }
+    .cache-note p:first-child { margin-top:0; }
+    .cache-note p:last-child { margin-bottom:0; }
+    .derivation {
+      margin:22px 0; padding:20px 22px; background:#f7f9fc;
+      border:1px solid var(--line); border-left:4px solid #94a3b8; border-radius:9px;
+      color:var(--muted); font-size:15px; overflow-x:auto;
+    }
+    .derivation .derivation-label {
+      margin:0 0 16px; color:var(--ink); font-size:14px; font-weight:700;
+      padding-bottom:10px; border-bottom:1px solid var(--line);
+    }
+    .derivation > p:last-child { margin-bottom:0; }
+    .derivation table { background:var(--paper); }
+    .warning { background:var(--warn); }
+    .good { background:var(--green); }
+    .table-wrap { overflow-x:auto; }
+    table { width:100%; border-collapse:collapse; margin:16px 0; font-size:15px; }
+    th,td { text-align:left; vertical-align:top; border-bottom:1px solid var(--line); padding:13px; }
+    th { background:#f2f5fa; }
+    code { font-family:Consolas,monospace; background:#edf1f7; padding:2px 5px; border-radius:4px; }
+    pre {
+      overflow:auto; background:#142137; color:#eaf1ff;
+      padding:19px; border-radius:9px; font-size:14px; line-height:1.7;
+    }
+    pre code { background:transparent; padding:0; color:inherit; }
+    a { color:var(--blue); overflow-wrap:anywhere; }
+    li { margin:7px 0; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    .card { border:1px solid var(--line); border-radius:9px; padding:18px; }
+    .card h3 { margin-top:0; }
+    .pill {
+      display:inline-block; font-size:13px; padding:2px 9px;
+      background:#e9eef8; border-radius:20px; margin-right:5px;
+    }
+    .formula { font-family:Consolas,monospace; overflow-wrap:anywhere; }
+    footer { font-size:14px; color:var(--muted); padding:0 5px; }
+    @media(max-width:720px) {
+      main { padding:24px 12px; }
+      section { padding:20px 16px; }
+      .grid { grid-template-columns:1fr; }
+      th,td { min-width:145px; padding:10px; }
+    }
+    @media print {
+      body { background:white; font-size:11pt; }
+      main { max-width:none; padding:0; }
+      section { break-inside:auto; box-shadow:none; }
+      a { color:inherit; }
+    }
+  </style>
+  <style data-id="immersive-translate-input-injected-css"></style></head>
+  <body style="">
+  <main style="">
+  <header style="font-size: 15px; font-weight: 400;">
+    <div class="eyebrow">推理系统 · 混合注意力 · GPU 缓存管理</div>
+    <h1>vLLM 与 SGLang 如何管理<br>混合注意力与 DeepSeek-V4 KV cache？</h1>
+    <p class="muted" style="">
+      面向 Qwen/Kimi 的 Full+Linear layer-outermost混合注意力，以及 DeepSeek-V4 的
+      SWA+CSA+HCA/Indexer block-outermost 布局，解释缓存布局、页大小不一致、
+      碎片化、前缀复用，以及不同缓存对象能否共享显存。
+    </p>
+    <div class="note warning" style="">
+      <strong>证据范围：</strong>
+      本文依据工作区内 vLLM v0.29.0、SGLang v0.5.20 的源码与文档核对，
+      并以仓库中的 Qwen3.5/Qwen3.8 cookbook 和 DeepSeek-V4 backend/test 作为结构证据。</div>
+  </header>
+
+  <section style="font-size: 15px; font-weight: 400;">
+    <h2>1. 先给结论</h2><ol style="">
+      <li style="">
+        <strong>vLLM 的关键机制是 KV cache spec、分组、packed layout 和共享 block stride。</strong>
+        对 block-outermost 布局的混合模型（DeepSeek V4），packed layout，vLLM 先把同一 group 内的不同 page
+        按实际字节数紧密排放，再让不同 group overlay 同一个 backing allocation。 对 layer-outermost 布局的模型（Qwen, Kimi），进入 page-size unification 或 full-allocation fallback。不同类型的KV Cache保留、释放与前缀命中逻辑不同。
+      </li>
+      <li style="">
+      <strong>SGLang 的关键机制是由混合包装层管理不同的底层池。</strong>
+        常见 <code>HybridLinearKVPool</code> 路径将 full attention 的 KV pool
+        与 Mamba/linear state pool 分开管理；较新的
+        <code>UnifiedHybridLinearKVPool</code> 路径可以把这些子池放进同一个
+        <code>UnifiedKVPool</code> 字节 buffer，由各自的子分配器管理不重叠的范围。
+        两边不要求把“一个 KV token page”和“一个 state slot”做成相同字节数；
+        <code>HybridLinearKVPool</code> 仍使用同一个 page_size 参数服务 full KV，
+        而 <code>MambaPool</code> 以 state slot/可选 envelope buffer 管理线性状态。需要关注分池后某个池耗尽、另一个池仍有空闲的容量失衡。</li></ol></section>
+
+  <section style="font-size: 15px; font-weight: 400;">
+    <h2 style="">2. vLLM：把异构缓存放入混合缓存管理体系</h2>
+    <h3 style="">2.1 模型层先声明不同的缓存规格，统一分配，生命周期不同</h3>
+    <p style="">
+      缓存管理器根据 KV cache spec 建立 KV cache groups。
+      相同缓存规格的层可以归组，attention 和状态层则采用对应的缓存管理策略。
+      相关源码通常围绕 <code>FullAttentionSpec</code>、
+      <code>MambaSpec</code>、<code>KVCacheGroupSpec</code> 等类型组织。
+    </p><p style="outline: rgb(37, 99, 235) dashed 1px; outline-offset: 2px;">Full attention 的历史 KV 通常在请求期间持续保留。 Linear attention 可以推进当前状态，也可以根据缓存策略保留部分历史状态。 混合管理器必须同时决定哪些 block 仍有引用、哪些状态可释放、 哪些前缀边界可以复用。</p>
+
+    <h3 style="">2.2 Layer-outermost: 修改block_size，统一页字节数</h3>
+    <p style="">
+      vLLM 对混合 page 的首选路径是 block-outermost packed grouping。
+      <code>_get_packed_kv_cache_groups</code> 先按 uniform type 建立 bucket，再按
+      <code>page_size_bytes</code> 形成组内的重复模式；组内 page 按 offset 紧密排列。
+      这一步不把不同 group 同时拼成一个 page：每个 group 都有自己的 layer-page
+      区域，并从共享 backing allocation 的相同 block 起点建立 view。
+      如果该布局不可用，<code>unify_kv_cache_spec_page_size</code> 才取最大页：
+      较小 attention page 在整数倍时增大 <code>block_size</code>，<code>MambaSpec</code> 或不整除的
+      非 MLA attention 可以用 <code style="">page_size_padded</code> 补齐，MLA 不兼容时转
+      full-allocation fallback。
+    </p>
+
+    <pre style=""><code>设：
+    T = 单个 full-attention 层、每 token 的 KV 字节数
+    S = 单个 linear 层的一份完整状态字节数
+
+  下面的关系只描述“统一页” fallback 的一种简化情形：
+    B × T ≥ S
+
+  因此：
+      B ≥ ceil(S / T)
+  （不是 packed block-outermost 路径的分配公式；实际还要看 layer group）
+
+  实际 B：
+    还必须满足 attention backend、kernel 和配置的合法粒度。
+
+  若公共页大小 P = B × T：
+    linear 页内 padding = P - S</code></pre>
+
+    <p style="font-weight: 400;">
+      这解释了一个容易反直觉的现象：
+      <strong style="">在统一页的 fallback 路径中，linear 状态较大可能迫使 full attention 使用较大的 token block。</strong>
+      它有助于统一分配粒度，却会使短请求的最后一个 KV block 留下更多空位，
+      也可能改变前缀缓存的命中粒度。packed 路径保留各 page 的实际大小，
+      只在某个 group 的 page 总和小于公共 <code>block_stride</code> 时产生尾部 slack。</p>
+    <h3 style="">2.3 Block-outermost: DeepSeek-V4：SWA + C4A/C128A/Indexer 的packed cache</h3><p style="">下文把模型文档中的 CSA/HCA 具体化为源码中的 C4A/C128A 压缩 MLA 路径。 DeepSeek-V4 的 sparse indexer backend 声明 <code>BLHNC</code> / <code>BLNHC</code> 布局。B 在最外层，所以一个物理 manager block 的内容可以表示为多个 layer page 的连续区域：</p><pre style=""><code>block b: [layer A page][layer B page][layer C page][tail slack]
+next block: 同样的排列，起点间隔为 block_stride</code></pre><p style="">这里的“打包”是同一 group 内多个 layer page 并排排放。不同 group 的 <code>KVCacheTensor</code> 可以从同一 backing allocation 的相同 block 起点建立 alias view；共享地址范围。因为一个 <code>block_id</code> 同一时刻只从共享 block pool 取给一个 group，这些 view 不会 同时承载两个 group 的有效值。</p><div class="note" style="background: none 0% 0% / auto repeat scroll padding-box border-box rgb(238, 244, 255);"><strong>如何理解 <code>byte_offset += len(layer_names) * spec.page_size_bytes</code>：</strong> 这行代码在构造每个 group 的 tensor view 时，为当前 group 内下一个 spec 区域累加字节偏移；它本身不表示 group 间打包。block-outermost 下， <code>layer_stride = page_size_bytes</code>、<code>block_stride = bytes_per_block</code>， 所以 block <code>b</code> 的地址是 <code>offset + l * layer_stride + b * block_stride</code>。所有 group 的 <code>offset</code> 可以为 0，从而覆盖同一 backing buffer。</div><p style="font-weight: 700;">C4A、C128A 和 indexer cache 都是 <code>MLAAttentionSpec</code> 的 uniform 类型，且block_size 都是 256，因此 packed grouping 可以把它们放进同一 bucket，落在同一个最终 group ，一个 manager block 出现类似 <code>[C4A page][indexer page][C128A page]</code> 的并排区域（按 <code>layers_by_spec</code> 的首次出现顺序排列）。</p><p style="outline: rgb(37, 99, 235) dashed 1px; outline-offset: 2px; color: rgb(29, 75, 154);">层数量也参与缓存布局。packed 路径会按 page-size pattern 把层拆成若干 cache group；同一 group 内的层 page 连续排放，不同 group 从 backing storage 的相同 block 起点建立 alias view。每个 group 的有效字节数是其所有 layer page 的总和，因此；传统统一页路径还可能出现 padding layer（如SWA group 2会出现一层padding）。</p><p style="">公共 stride 则是这些总和的最大值：</p><pre><code>group_bytes(g) = Σ page_size_bytes(layer in g)
+bytes_per_block = max_g group_bytes(g)
+num_blocks = floor(available_memory / bytes_per_block)</code></pre><p>因而<strong style="outline: rgb(37, 99, 235) dashed 1px; outline-offset: 2px;">小group仍可能有尾部slack</strong>：<code>bytes_per_block - group_bytes(g)</code>。DeepSeek-V4 + MTP 的测试还展示了典型的多 group 结构：一个主 full MLA group、一个目标 SWA group、一个 MTP/EAGLE SWA group、C4 state group 和 C128 state group；这是测试构造的示例，实际 group 数量取决于 checkpoint 的 层数、MTP/EAGLE、window 和 spec 注册结果。</p><p style="font-weight: 700;">配置阶段先得到 <code>bytes_per_block</code>，再计算 <code>num_blocks = available_memory // bytes_per_block</code>；worker 随后创建 一个大小约为 <code>num_blocks × bytes_per_block</code> 的 int8 backing buffer， 用 <code>as_strided</code> 为各层建立 view。运行时 block pool 只分配和回收整数 <code>block_id</code>；不同 group 的 manager 通过同一个 pool 取得这些 ID，释放后 地址范围即可服务另一 group。</p></section>
+
+  <section style="">
+    <h2>3. vLLM：prefix cache 保留策略与显存利用率的 tradeoff</h2>
+    <h3>3.1 混合注意力的 prefix cache</h3>
+    <p style="font-size: 15px; font-weight: 400;">启用 prefix caching 时，混合注意力模型的 SWA、FullAttention/MLA，以及 LinearAttention 的 Mamba state 检查点，
+      都通过同一个 <code>BlockPool</code> 和统一 free queue 管理可复用缓存。不同类型由各自的 manager 决定哪些块可登记、命中和释放，
+      可缓存且无请求引用的块则进入<strong style="outline: rgb(37, 99, 235) dashed 1px; outline-offset: 2px;">同一缓存 LRU 队列</strong>。当前状态、scratch 或未登记 hash 的块不作为 prefix cache 保留。</p>
+    <aside class="note muted cache-note" aria-label="dead cache 说明">
+      <p style=""><strong>dead cache 的保留规则。</strong>这里指在当前 prefix hit 对齐规则下，永远不会被复用的完整物理 block。
+        这些块不登记 prefix cache hash，也不作为可复用前缀保留；它们仍可服务当前请求的计算。
+        引用计数降到 0 后，没有 hash 的块放到统一 free queue 队头优先复用，有 hash 的 cache 块放到队尾保留。</p>
+      <p style="">例如，不开 EAGLE、采用默认 retention，<code>scheduler_block_size=256</code>、<code>sliding_window=128</code>、
+        SWA 物理 <code>block_size=64</code> 时，每段 256 token 有 4 个 SWA block；命中需要
+        <code>ceil((128−1)/64)=2</code> 个尾部块。前 128 token 的两个块不登记 hash，后 128 token 的两个块可登记。</p>
+      <p style="">处理粒度是完整物理块：dead 与 live token 位于同一块时，无法分别回收。开启 EAGLE 后，额外查找块也会改变可达范围。</p></aside>
+    <p style="font-size: 15px; font-weight: 400;"><strong style="outline: rgb(37, 99, 235) dashed 1px; outline-offset: 2px;">Prefix cache的匹配粒度scheduler_block_size，按照Max(block_size)决定。</strong>混合注意力的prefix cache匹配按照迭代不动点的方法来决定。</p>
+    <figure style="margin:16px 0;">
+      <img src="混合注意力前缀匹配.jpeg" alt="混合注意力通过迭代不动点确定一致前缀命中长度的示意图" style="display:block;max-width:100%;height:auto;margin:0 auto;" loading="lazy">
+    </figure>
+<p style="font-size: 15px; font-weight: 400;">prefix lookup 本身不刷新队列。实际接纳命中块时，<code>touch()</code> 增加引用计数，并把原本空闲的命中块移出队列；
+      释放后引用计数降到 0 的有 hash 块再追加到队尾。SWA 仅接纳命中终点需要的窗口块，窗口外已有的历史 live cache 不会因这次命中刷新 LRU。</p><p style="font-size: 15px; font-weight: 400;"><strong style="outline: rgb(37, 99, 235) dashed 1px; outline-offset: 2px;">Linear State 的难点在于检查点设置。</strong>Full attention 可以按缓存块保存前缀 KV。 Linear attention 的当前状态则持续被更新； 仅保存第 1,024 个 token 后的状态，并不能直接得到第 768 个 token 后的状态。 因此，前缀复用需要保存可恢复的中间检查点，或从更早检查点重算。</p><pre style="font-size: 15px; font-weight: 400;"><code>已有请求的前缀：
+  token 0 ───── 256 ───── 512 ───── 768 ───── 1024
+                S256      S512      S768       S1024
+
+  新请求与旧请求共享前 800 tokens：
+
+  若保存了 S768：
+    可从兼容的 768 边界恢复，再计算后面的 token。
+
+  若只有 S1024：
+    不能把它直接当作 S800 使用；
+    需要更早的可用状态，或者重算。</code></pre><p style="font-size: 15px; font-weight: 400;">对整个混合模型，一次有效的前缀命中必须让相关层都能恢复到一致的 token 位置。 不能仅看到 full KV 命中 800 tokens，就认为 linear 层也能跳过相同计算。 实际还要满足块边界、可用状态检查点和框架执行策略。</p><p style="font-size: 15px; font-weight: 400;">更密集的检查点可以降低重算量，但增加状态占用和复制成本。 更稀疏的检查点节约容量，但可能降低有效前缀命中长度。</p>
+    <h3>3.2 提高显存利用率仍有代价</h3>
+    <p style="font-size: 15px; font-weight: 400;"><strong style="">Qwen/Kimi 的 Full KV 与 MambaStates 对齐可能增大 FullAttention 的 block_size。</strong>
+      在需要统一页字节数的混合布局路径中，较大的 linear state 会推动 FullAttention 使用更大的 token block，减少状态页与 KV 页尺寸不一致造成的浪费。
+      这会改变 attention kernel 的分页与访存粒度，可能影响性能；更粗的 prefix hit 对齐也可能降低可复用 token 数和命中率，增加重算。
+      性能变化的方向与幅度取决于 backend/kernel 和请求分布，不能仅凭 block_size 判断必然变慢；支持更细命中粒度的路径也需要单独分析。</p>
+    <p style="font-size: 15px; font-weight: 400;"><strong style="">DeepSeek V4 的 block-outermost packing 通过组内不同缓存对象与注意力层的紧密排放，避免把每个小 page 都补齐到最大 page，但仍无法消除全部碎片。</strong>
+      各对象自身的 page alignment padding 仍存在；不同 group 共用最大 <code>block_stride</code>，较小 group 仍有尾部 slack；
+      最后一个未填满的 block，以及同一物理块内无法单独回收的无复用价值内容，也会占用容量。</p><table style="width: 1054.67px;"><thead><tr><th style="border-bottom: 0.666667px solid rgb(220, 227, 238);">最终 group</th><th style="border-bottom: 0.666667px solid rgb(220, 227, 238);">page 总字节数</th><th style="border-bottom: 0.666667px solid rgb(220, 227, 238);">页容量 / 公共 stride</th><th style="border-bottom: 0.666667px solid rgb(220, 227, 238);">有效内容 / 公共 stride</th><th style="border-bottom: 0.666667px solid rgb(220, 227, 238);">group 尾部 slack</th></tr></thead><tbody><tr><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">主 MLA：30 C4 KV + 30 indexer KV + 31 C128 KV</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">1,435,968 B</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">100%</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">1,410,928 / 1,435,968 = 98.26%</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">0 B</td></tr><tr><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">SWA 组 0：31 层</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">1,160,640 B</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">80.83%</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">1,158,656 / 1,435,968 = 80.69%</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">275,328 B</td></tr><tr><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">SWA 组 1：30 层</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">1,123,200 B</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">78.22%</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">1,121,280 / 1,435,968 = 78.09%</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">312,768 B</td></tr><tr><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">C4 state：30 主 compressor + 30 indexer compressor</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">1,244,160 B</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">86.64%</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">1,228,800 / 1,435,968 = 85.57%</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">191,808 B</td></tr><tr><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">C128 state：31 层</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">1,017,792 B</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">70.88%</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">1,015,808 / 1,435,968 = 70.74%</td><td style="border-bottom: 0.666667px solid rgb(220, 227, 238);">418,176 B</td></tr></tbody></table><p style="font-size: 15px;"><strong>DeepSeek V4 Pro中统一页利用率最低的是 C128 compressor group，有效内容利用率约 70.74%。</strong>它的每个物理 block 占用公共 stride 的 1,435,968 B，其中 1,015,808 B 是 state 内容、1,984 B 是 page alignment padding、418,176 B 是 group 尾部 slack。其他 group 不能同时占用该 block_id 的尾部空位。</p>
+    <div class="derivation" role="region" aria-label="DeepSeek V4 Pro 缓存打包推导过程" style="">
+      <p class="derivation-label">推导过程 · DeepSeek V4 Pro 缓存打包</p>
+    <p style="font-size: 15px; font-weight: 400;"><code style="">_get_packed_kv_cache_groups()</code> 先按 uniform type 和相同 block_size 建 bucket：
+      C4A 主 MLA、C4A indexer 和 C128A 主 MLA 的 block_size 都为 256，可以进入同一个混合 page bucket；
+      SWA KV、C4 compressor、C128 compressor 的 block_size 分别为 64、4、8，进入不同 bucket。
+      它们虽然不能与主 MLA 混合打包，但各自 bucket 内的多个层仍会打包进同一 group。</p>
+    <p style="font-size: 15px; font-weight: 400;">源码按每种 page_size 的层数判断 bucket 是否 balanced（各 page_size 层数相等）。balanced 的混合 page bucket 为
+      <code>repeats_per_group</code> 设置下限，再由 <code>_approximate_gcd()</code> 选择共同重复数；
+      单一 page_size bucket 可按这个重复数拆组，使用 <code>pattern_repeats[i::num_groups]</code> 分配层。
+      层数不相等的混合 page bucket 则整个保留。因此必须知道 checkpoint 的各类层数，才能得到最终 group 和利用率。</p>
+    <p style="font-size: 15px; font-weight: 400;">这里按 <a href="https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/config.json" target="_blank" rel="noopener">DeepSeek-V4-Pro 的实际 config.json</a> 计算：61 个目标层包含 30 层 C4A、31 层 C128A，head_dim=512、index_head_dim=128、sliding_window=128，另有一个 MTP 层。下面使用 fp8_ds_mla、FP8 indexer、attention manager block_size=256、单个 PP stage 包含全部目标层的运行条件，先不启用 MTP。权重量化配置不等同于 KV dtype。</p>
+    <table style="font-size: 15px; font-weight: 400;"><thead><tr><th style="">对象</th><th>未对齐页字节数</th><th>按 576 B 对齐后的 page_size_bytes</th></tr></thead><tbody>
+      <tr><td>C4A 主 MLA / SWA KV</td><td>64 × 584 = 37,376</td><td>37,440 B</td></tr>
+      <tr><td>C128A 主 MLA</td><td>2 × 584 = 1,168</td><td>1,728 B</td></tr>
+      <tr><td>FP8 indexer KV</td><td>64 × (128 + 4) = 8,448</td><td>8,640 B</td></tr>
+      <tr><td>C4 主 compressor</td><td>4 × (2 × 2 × 512) × 4 = 32,768</td><td>32,832 B</td></tr>
+      <tr><td>C128 主 compressor</td><td>8 × (2 × 1 × 512) × 4 = 32,768</td><td>32,832 B</td></tr>
+      <tr><td>C4 indexer compressor</td><td>4 × (2 × 2 × 128) × 4 = 8,192</td><td style="">8,640 B</td></tr>
+    </tbody></table><p style="font-size: 15px; font-weight: 400;">第一步按 uniform type、block_size 和 SWA window 建 bucket：主 MLA bucket 为 30 个 C4A KV、30 个 indexer KV、31 个 C128A KV（block_size=256）；SWA bucket 有 61 个 page（block_size=64）；C4 state bucket 含 30 个 32,832 B 主 state page 和 30 个 8,640 B indexer state page（block_size=4）；C128 state bucket 有 31 个 32,832 B page（block_size=8）。</p>
+    <p style="font-size: 15px; font-weight: 400;">第二步判断 balanced：主 MLA 的三种 page 数量 30/30/31 不相等，整组保留；C4 state 的两种 page 数量 30/30 相等，是 balanced 混合 page bucket，因此 <code>min_repeats_per_group=30</code>。SWA、C4 state、C128 state 的最大同尺寸 page 数量为 61、30、31，源码调用 <code>_approximate_gcd([61,30,31], lower_bound=30)</code>，选择 <strong>repeats_per_group=31</strong>（向上补齐计数总和为 1+1+0=2）。</p>
+    <p style="font-size: 15px; font-weight: 400;">第三步计算 group 数：主 MLA 不 balanced，得到 1 组；SWA 得到 ceil(61/31)=2 组，通过 <code>pattern_repeats[i::2]</code> 分成 31 层和 30 层；C4 state 得到 ceil(30/31)=1 组，包含 30 对主/indexer state；C128 state 得到 ceil(31/31)=1 组。这些 state 是 SlidingWindowMLASpec，不触发 MambaSpec 的额外拆组分支。最终共 <strong>5 个 group</strong>。</p>
+    <pre style="font-size: 15px; font-weight: 400;"><code>G_MLA = 30 × (37,440 + 8,640) + 31 × 1,728 = 1,435,968 B
+G_SWA_0 = 31 × 37,440 = 1,160,640 B
+G_SWA_1 = 30 × 37,440 = 1,123,200 B
+G_C4_state = 30 × (32,832 + 8,640) = 1,244,160 B
+G_C128_state = 31 × 32,832 = 1,017,792 B
+公共 block_stride P = max(上述五组) = 1,435,968 B（由主 MLA 决定）
+页容量占比 = group page 总字节数 / P
+有效内容利用率 = group 未对齐的完整页内容字节数 / P</code></pre>
+    <p style="font-size: 15px; font-weight: 400;">若启用配置中的一个 MTP 层，且其 SWA spec 与目标相同，则 SWA bucket 增至 62 层，<code>_approximate_gcd([62,30,31], lower_bound=30)</code> 仍选 31；两个 SWA group 都为 31 层，其有效内容利用率都为 80.69%。主 MLA、两个 compressor group 和公共 stride 保持上述值。spec 不同的 MTP 必须按实际 bucket 重新计算。</p>
+    <p style="font-size: 15px; font-weight: 400;">这些比例是完整填充的单个物理 block 的利用率，包含 group 内所有缓存对象；整个显存池还需按各组占用的 block 数加权。PP 切分、KV dtype、indexer FP4/FP8 选择和部分填充都会改变结果。</p>
+    </div>
+    <p class="muted" style="font-size: 15px; font-weight: 400;">源码核验：<code>single_type_kv_cache_manager.py</code> 的 <code>reachable_block_mask()</code>、
+      <code>cache_blocks()</code> 与 <code>add_local_computed_blocks()</code>；<code>block_pool.py</code> 的
+      <code style="">cache_full_blocks()</code>、<code>touch()</code> 与 <code>free_blocks()</code>；
+      <code>kv_cache_utils.py</code> 的页大小统一与 packed group 分配逻辑。以上结论以工作区当前源码及对应配置为准。</p>
+  </section>
+
+  <section style="font-size: 15px; font-weight: 400;">
+    <h2 style="">4. SGLang：Full KV 与 Linear State 的分池和统一 backing</h2>
+    <h3>4.1 混合包装层负责路由到对应池</h3>
+    <p>
+      在常见混合线性注意力实现中，
+      <code>HybridLinearKVPool</code> 对上提供统一入口，
+      内部将 full-attention 层的数据交给 full KV pool，
+      将 linear 层的卷积与 recurrent state 交给 Mamba/linear state pool。
+    </p>
+
+    <pre><code>混合模型
+    │
+    ├─ Full-attention 层
+    │    └─ KV pool：按 token / token page 分配
+    │
+    └─ Linear-attention 层
+         └─ State pool：按请求状态 / 检查点槽分配
+
+  上层协调请求与前缀；
+  下层使用各自的数据布局和容量单位。</code></pre>
+
+    <p>
+      这样不必仅仅为了容纳一个较大的 linear state，
+      就让一个 full-attention token page 同样变大。
+      Full KV 的 page 粒度和 linear state 的 slot 大小可以分别确定。
+    </p>
+
+    <h3 style="">4.2 不强制统一 page_size，容量可以分开或在 unified buffer 中回收</h3>
+    <p>
+      显存预算需要在 full KV 和 linear state 之间分配。
+      具体如何计算，取决于版本、最大并发、状态大小、
+      prefix caching 策略和相关配置；不能假设两边都是同一个 token 容量。
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>工作负载</th><th>容易先紧张的资源</th><th>另一侧可能出现的情况</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>少量请求、很长上下文</td>
+            <td>Full KV token 容量。</td>
+            <td>Linear state slots 仍有较多空闲。</td>
+          </tr>
+          <tr>
+            <td>大量并发、每个请求较短</td>
+            <td>每请求 linear 状态容量，亦可能受调度上限约束。</td>
+            <td>Full KV pool 仍有空闲 token pages。</td>
+          </tr>
+          <tr>
+            <td>大量可缓存前缀与状态检查点</td>
+            <td>缓存状态容量与淘汰压力。</td>
+            <td>空闲量取决于前缀长度、命中与检查点保留策略。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      如果底层是在初始化时分别预分配的大张量，
+      一个池内归还 slot 只是增加该池的空闲计数，
+      不会自动让另一个池的 tensor 变大。
+      SGLang 的 <code>UnifiedKVPool</code> 是明确的共享 backing storage 例外：
+      它在一个 <code>uint8</code> buffer 中按子池的 envelope/page 方向增长，
+      通过虚拟 slot 到物理范围的映射和压缩让空闲范围可以被邻近子池回收。
+      这仍然是地址空间复用，不是 full KV 与 linear state 内容互换。
+      没有该 unified 路径时，池间借用必须依靠动态重分配或重建池机制。
+    </p>
+    <div class="note warning">
+      <strong>纯分池后的闲置不是典型外部碎片。</strong>
+      它更接近“预算分配失衡”：总空闲显存看起来足够，
+      但需要的那一类 slot 或 page 已经用完；启用 unified buffer 时，
+      allocator 可以回收空闲地址范围，但仍受子池 entry 大小、方向和压缩时机约束。</div></section>
+
+  <section style="font-size: 15px; font-weight: 400;">
+    <h2 style="">5. “Full 和 Linear Cache 能否复用？”需要拆成五个问题</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>复用的含义</th><th>答案</th><th>原因或条件</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>用 full KV 的内容代替 linear state</td>
+            <td><strong>不能直接复用。</strong></td>
+            <td>
+              两者来自不同层、不同投影与不同计算。
+              Linear state 是特定递推过程的结果，full KV 不是它的等价编码。
+            </td>
+          </tr>
+          <tr>
+            <td>同一请求让两类活跃缓存占用同一段显存</td>
+            <td><strong>通常不能。</strong></td>
+            <td>
+              下一步解码同时需要各层的历史信息。
+              层执行时间不同，不代表其缓存的生命周期不重叠。
+            </td>
+          </tr>
+          <tr>
+            <td>释放后，把同一地址分配给另一种缓存</td>
+            <td><strong>原理上可以，实现有条件。</strong></td>
+            <td>
+              需要分配器支持，满足大小、对齐、映射和同步约束，
+              并确保没有活跃引用或仍在访问的 kernel。
+            </td>
+          </tr>
+          <tr>
+            <td>相同前缀的多个请求共享缓存</td>
+            <td><strong>可以分别复用两类前缀数据，取决于实现。</strong></td>
+            <td>
+              Full 复用 KV；linear 复用对应位置的状态检查点。
+              继续写入时需要私有状态、复制或等价的写时保护。
+            </td>
+          </tr>
+          <tr>
+            <td>把 full 池的空闲容量实时借给 linear 池</td>
+            <td><strong>不能默认存在。</strong></td>
+            <td>
+              统一混合分配器也受物理布局约束；
+              独立预分配池通常需要额外动态内存机制才能跨池扩容。
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note good">
+      <strong>可行的优化目标：</strong>
+      尽量让已经没有语义用途的内存回到可用容量，
+      同时保留能节省后续计算的前缀数据。
+      这与“让 full KV 和 linear state 共用一份内容”是不同问题。</div></section>
+
+  <section style="font-size: 15px; font-weight: 400;">
+    <h2 style="">6. 应当区分的四类浪费</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>类型</th><th>表现</th><th>应检查的方向</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>页内碎片</td>
+            <td>请求最后一个 KV block 没用满；state 为公共页大小补齐。</td>
+            <td>实际 block size、页字节数、请求长度分布、状态 dtype。</td>
+          </tr>
+          <tr>
+            <td>分组填充</td>
+            <td>为了组织统一的 cache groups，某些组保留未用层槽。</td>
+            <td>每组层数、拆组规则、最终 backing tensor 布局。</td>
+          </tr>
+          <tr>
+            <td>池间容量失衡</td>
+            <td>Full KV 耗尽但 state slots 有空闲，或反过来。</td>
+            <td>容量预算、最大并发、长短请求比例、是否支持动态重分配。</td>
+          </tr>
+          <tr>
+            <td>经典外部碎片</td>
+            <td>空闲内存被切成不满足分配要求的小段。</td>
+            <td>大张量预分配、固定大小块池、CUDA allocator 行为。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      预分配固定大小块池通常能降低服务运行中的经典外部碎片，
+      但并不会消除前三类问题。
+      同样，GPU 已分配内存很高并不等于有效缓存利用率很高：
+      空闲 slot、padding 和可淘汰前缀都可能仍处于已分配大张量中。</p></section>
+
+  <section style="font-size: 15px; font-weight: 400;">
+    <h2 style="">7. 源码核验入口</h2>
+    <p class="muted">
+      以下链接对应本次工作区中实际核对的实现入口；GitHub main 会变化，
+      但本地快照中的相同符号可直接定位。
+    </p>
+
+    <h3>vLLM</h3>
+    <ul>
+      <li>
+        <a href="https://docs.vllm.ai/en/latest/design/hybrid_kv_cache_manager.html" target="_blank" rel="noopener">Hybrid KV Cache Manager 设计文档</a>：
+        核验公共页大小、层分组、混合缓存约束和支持边界。
+      </li>
+      <li>
+        <a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/kv_cache_interface.py" target="_blank" rel="noopener">vllm/v1/kv_cache_interface.py</a>：
+        搜索 FullAttentionSpec、MambaSpec、page_size_bytes。
+      </li>
+      <li>
+        <a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/kv_cache_utils.py" target="_blank" rel="noopener">vllm/v1/core/kv_cache_utils.py</a>：
+        核验分组、页大小协调、padding 和块数计算。
+      </li>
+      <li>
+        <a href="https://github.com/vllm-project/vllm/tree/main/vllm/v1/core" target="_blank" rel="noopener">vllm/v1/core/</a>：
+        搜索 block_pool、kv_cache_manager、single_type_kv_cache_manager，
+        核验释放、引用计数和不同类型的前缀命中策略。
+      </li>
+      <li>
+        <a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/gpu_model_runner.py" target="_blank" rel="noopener">GPU model runner</a>：
+        核验最终 KV tensors 如何分配，以及 cache groups 如何映射到物理存储。
+      </li>
+      <li>
+        <a href="https://github.com/vllm-project/vllm/blob/main/vllm/models/deepseek_v4/attention.py" target="_blank" rel="noopener">DeepSeek-V4 attention.py</a>、
+        <a href="https://github.com/vllm-project/vllm/blob/main/vllm/models/deepseek_v4/compressor.py" target="_blank" rel="noopener">compressor.py</a>、
+        <a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/mla/indexer.py" target="_blank" rel="noopener">MLA indexer backend</a>：
+        核验 C4A/C128A/Indexer/SWA 的 spec、compress ratio、manager block_size 和
+        BLHNC/BLNHC 支持；本地快照中的 compressor state block_size 是 C4=4、C128=8。
+      </li>
+      <li>
+        <a href="https://github.com/vllm-project/vllm/blob/main/tests/v1/core/test_contiguous_kv_packing.py" target="_blank" rel="noopener">packed layout tests</a> 与
+        <a href="https://github.com/vllm-project/vllm/blob/main/tests/v1/worker/test_dsv4_packed_zeroer_geometry.py" target="_blank" rel="noopener">DeepSeek-V4 geometry test</a>：
+        核验 group overlay、最大 group stride、层内 page offset 和 alignment padding。
+      </li>
+      <li>
+        <a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/mamba/mamba_utils.py" target="_blank" rel="noopener">mamba_utils.py</a> 与
+        <a href="https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/models/qwen3_5.py" target="_blank" rel="noopener">qwen3_5.py</a>：
+        核验 Gated DeltaNet 状态 shape、dtype 与层类型。
+      </li>
+    </ul>
+
+    <h3>SGLang</h3>
+    <ul>
+      <li>
+        <a href="https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/memory_pool.py" target="_blank" rel="noopener">memory_pool.py</a>：
+        搜索 HybridLinearKVPool、MambaPool、MHATokenToKVPool，
+        查看 full KV 和 linear 状态是否独立预分配、容量单位如何定义。
+      </li>
+      <li>
+        <a href="https://github.com/sgl-project/sglang/tree/main/python/sglang/srt/mem_cache" target="_blank" rel="noopener">mem_cache/</a>：
+        核验混合前缀缓存、状态检查点、引用计数与淘汰机制。
+      </li>
+      <li>
+        <a href="https://github.com/sgl-project/sglang/tree/main/python/sglang/srt/model_executor" target="_blank" rel="noopener">model_executor/</a>：
+        搜索 hybrid、mamba、memory pool，核验池预算计算与初始化顺序。
+      </li>
+      <li>
+        <a href="https://github.com/sgl-project/sglang/tree/main/python/sglang/srt/models" target="_blank" rel="noopener">models/</a> 与
+        <a href="https://github.com/sgl-project/sglang/tree/main/python/sglang/srt/configs" target="_blank" rel="noopener">configs/</a>：
+        结合模型注册和实际配置确认 Qwen 各版本是否接入同一混合缓存路径。
+      </li>
+    </ul>
+
+    <div class="note warning">
+      <strong>本文未下结论的事项：</strong>
+      Qwen3.6／3.7／3.8 在指定发行版中是否可用；
+      最新版本是否增加跨池动态借用；
+      当前默认检查点策略、默认分配比例与具体命令行参数。
+      这些都需要真实源码与运行配置支持，不能从架构原理推断。
+    </div>
+  </section>
+
+  <footer style="font-size: 15px; font-weight: 400;">
+    本文中的数字示例为机制演示，不是模型实测。
+    所有内存尺寸首先按单层、单 GPU rank 理解，再按实际层数和并行布局汇总。
+  </footer>
+  </main>
+  
+  
+
+</body></html>
