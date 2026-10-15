@@ -82,7 +82,7 @@
   <main style="">
   <header style="font-size: 15px; font-weight: 400;">
     <div class="eyebrow">推理系统 · 混合注意力 · GPU 缓存管理</div>
-    <h1>vLLM 与 SGLang 如何管理<br>混合注意力与 DeepSeek-V4 KV cache？</h1>
+    <h1 style="">vLLM 与 SGLang 如何管理<br>混合注意力与 DeepSeek-V4 KV cache？&nbsp;</h1>
     <p class="muted" style="">
       面向 Qwen/Kimi 的 Full+Linear layer-outermost混合注意力，以及 DeepSeek-V4 的
       SWA+CSA+HCA/Indexer block-outermost 布局，解释缓存布局、页大小不一致、
@@ -104,7 +104,7 @@
       <li style="">
       <strong>SGLang 的关键机制是由混合包装层管理不同的底层池。</strong>
         常见 <code>HybridLinearKVPool</code> 路径将 full attention 的 KV pool
-        与 Mamba/linear state pool 分开管理；较新的
+        与 Mamba/linear state pool 分开管理；可选的
         <code>UnifiedHybridLinearKVPool</code> 路径可以把这些子池放进同一个
         <code>UnifiedKVPool</code> 字节 buffer，由各自的子分配器管理不重叠的范围。
         两边不要求把“一个 KV token page”和“一个 state slot”做成相同字节数；
@@ -240,139 +240,207 @@ G_C128_state = 31 × 32,832 = 1,017,792 B
   </section>
 
   <section style="font-size: 15px; font-weight: 400;">
-    <h2 style="">4. SGLang：Full KV 与 Linear State 的分池和统一 backing</h2>
-    <h3>4.1 混合包装层负责路由到对应池</h3>
-    <p>
-      在常见混合线性注意力实现中，
-      <code>HybridLinearKVPool</code> 对上提供统一入口，
-      内部将 full-attention 层的数据交给 full KV pool，
-      将 linear 层的卷积与 recurrent state 交给 Mamba/linear state pool。
-    </p>
-
-    <pre><code>混合模型
-    │
-    ├─ Full-attention 层
-    │    └─ KV pool：按 token / token page 分配
-    │
-    └─ Linear-attention 层
-         └─ State pool：按请求状态 / 检查点槽分配
-
-  上层协调请求与前缀；
-  下层使用各自的数据布局和容量单位。</code></pre>
-
-    <p>
-      这样不必仅仅为了容纳一个较大的 linear state，
-      就让一个 full-attention token page 同样变大。
-      Full KV 的 page 粒度和 linear state 的 slot 大小可以分别确定。
-    </p>
-
-    <h3 style="">4.2 不强制统一 page_size，容量可以分开或在 unified buffer 中回收</h3>
-    <p>
-      显存预算需要在 full KV 和 linear state 之间分配。
-      具体如何计算，取决于版本、最大并发、状态大小、
-      prefix caching 策略和相关配置；不能假设两边都是同一个 token 容量。
-    </p>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>工作负载</th><th>容易先紧张的资源</th><th>另一侧可能出现的情况</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>少量请求、很长上下文</td>
-            <td>Full KV token 容量。</td>
-            <td>Linear state slots 仍有较多空闲。</td>
-          </tr>
-          <tr>
-            <td>大量并发、每个请求较短</td>
-            <td>每请求 linear 状态容量，亦可能受调度上限约束。</td>
-            <td>Full KV pool 仍有空闲 token pages。</td>
-          </tr>
-          <tr>
-            <td>大量可缓存前缀与状态检查点</td>
-            <td>缓存状态容量与淘汰压力。</td>
-            <td>空闲量取决于前缀长度、命中与检查点保留策略。</td>
-          </tr>
-        </tbody>
-      </table>
+    <h2 id="sglang">4. SGLang：从静态分池到 unified-memory 动态共享显存</h2>
+    <div class="note">
+      <strong>本章结论：</strong>默认路径分别预分配 Full KV 与 Linear State；
+      <code>--enable-unified-memory</code> 默认关闭，开启后用一块共享字节 buffer 承载逻辑子池，
+      通过浮动边界、空洞复用和必要的压实调配容量。两类缓存保留各自的数据、分配单位和生命周期。
+      通用 unified-memory 支持 Full+Linear、Full+SWA 及 Full+SWA+State，明确排除 DeepSeek-V4。
+      <a href="#sg-src-init" style="">[S1]</a>
     </div>
+    <p class="muted">以下以工作区 <code>sglang-release-v0.5.20</code> 的实际实现为准。
+      先说明预算与布局，再沿“分配 → 回收 → 索引转换 → 同步”解释运行时行为；
+      本章末尾列出所给参考摘要与本地快照的差异。</p>
 
-    <p>
-      如果底层是在初始化时分别预分配的大张量，
-      一个池内归还 slot 只是增加该池的空闲计数，
-      不会自动让另一个池的 tensor 变大。
-      SGLang 的 <code>UnifiedKVPool</code> 是明确的共享 backing storage 例外：
-      它在一个 <code>uint8</code> buffer 中按子池的 envelope/page 方向增长，
-      通过虚拟 slot 到物理范围的映射和压缩让空闲范围可以被邻近子池回收。
-      这仍然是地址空间复用，不是 full KV 与 linear state 内容互换。
-      没有该 unified 路径时，池间借用必须依靠动态重分配或重建池机制。
-    </p>
-    <div class="note warning">
-      <strong>纯分池后的闲置不是典型外部碎片。</strong>
-      它更接近“预算分配失衡”：总空闲显存看起来足够，
-      但需要的那一类 slot 或 page 已经用完；启用 unified buffer 时，
-      allocator 可以回收空闲地址范围，但仍受子池 entry 大小、方向和压缩时机约束。</div></section>
+    <h3 id="sglang-static">4.1 默认分池：分配单位不同，预算在启动时确定</h3>
+    <p style=""><code>HybridLinearKVPool</code> 将 Full 层路由到 <code>full_kv_pool</code>，
+      Linear 层的卷积状态与 recurrent state 由 <code>MambaPool</code> 保存。
+      Full KV 随序列长度按 token/page 增长；State 以状态槽分配，活跃请求和前缀检查点都可能占槽。<a href="#sg-src-layout">[S2]</a></p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>资源</th><th>容量单位</th><th>默认预算及典型瓶颈</th></tr></thead>
+      <tbody>
+        <tr><td>Full KV</td><td style="">token 或 token page</td>
+          <td>扣除状态预算后的显存除以每 token 的 KV 字节数。少量长请求容易先耗尽此池。</td></tr>
+        <tr><td>Linear State</td><td>state slot，包含该子池所有状态层</td>
+          <td>按状态大小和预算计算槽数。大量短请求、较多前缀检查点容易增加此池压力。</td></tr>
+      </tbody>
+    </table></div>
+    <p style=""><code>--mamba-full-memory-ratio</code> 表示 State / Full KV 的<strong>显存比</strong>，
+      通用默认值为 <code>0.9</code>，模型可覆盖。忽略 padding、临时区及并行修正时，
+      设总缓存预算为 B、比例为 r，则 State 约分到 <code>B × r / (1 + r)</code>，Full KV 约分到
+      <code>B / (1 + r)</code>。显式 <code>--max-mamba-cache-size</code> 等配置会改变这套推导；
+      speculative scratch、并发与 PP/DP 划分也需另行计入。<a href="#sg-src-budget">[S3]</a></p>
+    <p style="">独立预分配时，归还 State slot 只增加 State 池的空闲量，Full KV 的底层 Tensor 不会随之扩大。
+      因此主要问题是<strong>池间容量失衡</strong>，而不是为了统一页字节数产生的 padding。
+      Full 页大小无需因 Linear 状态很大而被迫增大；Linear prefix 复用仍受状态检查点粒度约束。
+      <a href="#sg-src-index">[S6]</a></p>
+
+    <h3 id="sglang-buffer">4.2 UnifiedKVPool：共享字节预算，子池边界动态浮动</h3>
+    <p><code>UnifiedKVPool</code> 一次分配 <code>uint8</code> backing buffer，各个
+      <code>SubPoolSpec</code> 描述自身的对象字节数、层数、dtype 和生长方向。
+      实际底层长度为 <code>total_bytes + view_tail_pad_bytes</code>，还包含 Tensor view 的尾部保护空间；
+      可用预算也需扣除保留的 page/slot 0 与边界对齐余量。<a href="#sg-src-layout">[S2]</a></p>
+    <pre><code>Full + Linear（低地址 → 高地址）
+[保留区 | Mamba/State → | 共享空闲 gap | ← Full KV]
+          按 state slot                 按 token page
+
+Full + SWA + State（三池布局）
+[保留区 | State → | gap | SWA 浮动区 | gap | ← Full KV]
+                       可压实、按需搬移
+
+每个子池占据不重叠的字节范围；全局 buffer 地址和大小固定。</code></pre>
+    <p>Full+Linear 中，State 位于低字节端向上增长，Full 位于高字节端向下增长。
+      两个 END 子池锚定两端，分配水位线浮动；它们内部的<strong>存活物理页仍可搬移</strong>。
+      三池布局增加 <code>FloatMultiEndedAllocator</code>，SWA 区间可在两端之间移动。
+      不同子池的物理页编号基于各自对象字节数，数值本身不能跨池比较。<a href="#sg-src-pressure">[S4]</a></p>
+    <p style="">布局按 page envelope 组织：Full 一个 envelope 包含一页 token 在该子池所有层中的 KV；
+      State 一个 envelope 包含一个状态槽的所有层。Full 的 <code>page_size=P</code>，
+      State 的 <code>page_size=1</code>，虚拟 ID 空间独立。&nbsp;</p>
+    <div class="note good" style=""><strong>容量调配发生在字节边界：</strong>
+      共享路径中的 <code>mamba_full_memory_ratio</code> 参与启动预算推导，不固定运行时 State / Full 的显存分界。
+      一个子池腾出边界空间后，邻池可按自己的对象大小重新分配这段字节。
+      最大请求数、虚拟 ID 容量、Full/SWA 组合调度上限及额外 scratch 仍可能限制扩容，不能把“共享”理解成无限增长。</div>
+
+    <h3 id="sglang-pressure" style="">4.3 分配短缺：先释放可回收空间，再由上层驱逐或回退请求</h3>
+    <p style="">分配器先复用本池已释放的物理页，再尝试向共享 gap 扩展。
+      <code>available_size()</code> 核算当前可分配量；<code>schedulable_available_size()</code>
+      还可计入邻池经 urgent flush 能让出的空洞字节，但不提前计入仍等待事件完成的
+      <code>_pending_reuse</code>。PD gate 关闭时，受保护邻池的空洞也不计入这项借用额度。
+      Full+SWA 组合分配同时消耗两个子池，需按联合字节成本核算，不能相加各池“最大可用量”。
+      <a href="#sg-src-pressure">[S4]</a></p>
+    <pre><code>分配短缺
+  └─ _relieve_for_alloc（只负责分配器内部恢复）
+       1. 对 _flush_targets() 执行 flush_for_allocation()
+          两端池：吸收边界空洞，必要时压实
+          三池：先让 float 池做零拷贝边界收缩
+       2. 仍不足：_ask_float_for_room() 请求浮动池搬移让路
+       3. 仍不足：返回失败，分配入口可返回 None
+
+上层容量检查 / 调度
+  └─ 驱逐可淘汰的 prefix cache → 重试容量检查
+       └─ 仍不足：减少本轮准入，或 retract 活跃请求后重新调度</code></pre>
+    <p style=""><strong>urgent flush </strong>整理已经释放的空间；
+      prefix 驱逐决定放弃哪些可重算数据，retraction 减少活跃工作集。
+      这三层在不同入口组合使用，并非 <code>_relieve_for_alloc()</code> 内部固定执行“flush → LRU → retract”。
+      <code>UnifiedRadixCache.evict_for_alloc()</code> 可在 State 缺字节而不缺虚拟 ID 时，
+      驱逐 Full 前缀来供给 State。
+      <a href="#sg-src-scheduler">[S5]</a></p>
+
+    <h3 id="sglang-compaction">4.4 Lazy compaction：释放空洞与归还共享空间是两步</h3>
+    <p style="">释放位于子池内部的一页，得到的只是<strong>本池可复用的空洞</strong>。
+      只有边界已空，或把边界附近的存活页搬入内部空洞并收缩水位线，字节才会进入共享 gap。</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>模式</th><th>free 做什么</th><th>何时整理物理布局</th></tr></thead>
+      <tbody>
+        <tr><td>Lazy：两端池默认路径</td>
+          <td><code>_free_lazy()</code> 将对应 V2P/P2V 项标为 <code>-1</code>，回收虚拟 ID，
+            将物理页加入 <code>_free_phys_pages</code>；不立即搬存活页。</td>
+          <td>分配短缺触发 urgent flush；调度空隙也可执行 <code>flush_opportunistic()</code>，并非只在 OOM 时压实。</td></tr>
+        <tr><td>Eager：环境变量回退</td>
+          <td>free 路径在 stream 依赖之后立即调用 <code>_compact_pending()</code>。</td>
+          <td>即时搬页并收缩水位线；<code>SGLANG_DISABLE_LAZY_COMPACTION=1</code> 可选择该路径，PD gate 要求 lazy。</td></tr>
+        <tr><td>Float：三池中的 SWA</td>
+          <td>保留可复用洞；flush 收缩区间两侧的连续空洞。</td>
+          <td>按需由 <code>make_room()</code> / <code>compact_holes()</code> 搬移；float 不采用 END 池的 lazy 事件流水线。</td></tr>
+      </tbody>
+    </table></div>
+    <p style="">两端池一次批量搬移先调用 <code>move_kv_cache(dst, src)</code>，再更新
+      <code>V2P[v]=dst</code>、<code>P2V[dst]=v</code>、<code>P2V[src]=-1</code>。
+      请求表与 radix tree 保留原虚拟 ID；后端下一轮根据新映射生成索引。 Float 的重叠平移还可能需要有序逐页搬移，不能概括成“所有压实只发一次拷贝”。
+      <a href="#sg-src-pressure">[S4]</a></p>
+    <p class="muted"><code>_flush_deferred_free_group()</code> 只把分组积累的 free 请求应用到分配器，
+      它本身不是搬页函数。END 池的边界吸收与 float 的空洞边界收缩才是无需复制数据的回收操作。</p>
+
+    <h3 id="sglang-v2p">4.5 Attention 适配：虚拟页 → 物理页 → kernel-facing 索引</h3>
+    <p style="">统一 buffer 的页内包含多层数据，逐层 K/V view 已嵌入层偏移。
+      所以 attention 使用的索引不仅要查询 V2P，还要按页内块数缩放。
+      <code>translate_kv_loc()</code> 供分配器内部搬移等逻辑取得物理 ID；
+      <code style="">translate_kv_loc_for_kernel()</code> / <code>translate_write_loc_for_kernel()</code>
+      才输出计算后端使用的 ID。<a href="#sg-src-index">[S6]</a></p>
+    <pre><code>P = Full KV 页内 token 数；v = 虚拟 token ID
+p = V2P[v // P]；o = v % P
+M = 子池的 blocks_per_page：MHA 为 2 × 层数，MLA 为层数
+
+物理 token ID        = p × P + o
+kernel-facing token = p × P × M + o
+kernel-facing block = p × M
+
+M 改变索引步长，不增大 attention 的 token 页大小 P。</code></pre>
+    <div class="table-wrap"><table>
+      <thead><tr><th>路径</th><th>适配位置与后端得到的数据</th></tr></thead>
+      <tbody>
+        <tr><td>Full 读</td><td><code>KVIndexTranslator</code> 融合请求表 gather 与 V2P 查询。
+          Triton/FlashInfer 用扁平 token 索引；FA3/FA4、TRT-LLM MLA 等使用已转换的 page/block table。
+          常规 attention 主计算不必每次 K/V load 再查 V2P。</td></tr>
+        <tr><td>Full 写</td><td style="">构造 <code>ForwardBatch</code> 时将 <code>out_cache_loc</code>
+          替换为 kernel-facing ID，新 Tensor 保留原调度索引的虚拟语义；原值保存到 <code>out_cache_loc_virtual</code>。</td></tr>
+        <tr><td>SWA</td><td>有独立 V2P。读从虚拟页直接生成 SWA 表；写可由 Full kernel ID 经
+          Full P2V 找回虚拟页，再查 SWA V2P，避免把两池物理编号混用。</td></tr>
+        <tr><td>Linear State</td><td><code>page_size=1</code>，状态 slot 经自身 V2P gather 得到物理状态 ID；
+          linear backend 同时需要适配 state Tensor 的 stride。</td></tr>
+        <tr><td>CUDA Graph / DCP</td><td style="">Graph 在 replay 前用当前 V2P 原地刷新固定地址的索引 buffer。
+          DCP 读先选本 rank 的 token 并收缩 widened ID；写转换还需按 owner 过滤非本 rank 的位置。</td></tr>
+      </tbody>
+    </table></div>
+    <p style="">后端兼容性由索引接入和 Tensor 布局共同决定。
+      当前启动检查已允许多种 Full attention 后端；具体白名单随 MHA/MLA、DCP 和 speculative 配置变化。
+      不能仅凭 CLI help 中的旧描述推断全部支持边界。<a href="#sg-src-gates">[S7]</a></p>
+
+    <h3 id="sglang-safety">4.6 搬页安全：stream 依赖与传输保护各有职责</h3>
+    <p>分配器在 scheduler stream 上更新映射和拷贝数据，forward stream 等待相应 scheduler 工作。
+      urgent flush 用 <code>wait_event()</code> 排在整个 forward 完成之后，避免拷到旧数据，
+      并避免提前复用仍被读取的源页；非 urgent 路径可把未安全复用的源页放入 <code>_pending_reuse</code>，
+      待事件完成或 urgent 的 stream wait 后再归还。<a href="#sg-src-pressure">[S4]</a></p>
+    <div class="note warning" style=""><strong>stream wait 不等于全流程无 host 同步。</strong>
+      <code>_settle_inflight_forward()</code> 和 urgent 的 pending-reuse 等待使用 GPU stream 依赖；
+      但 <code>_flush()</code> 将空洞列表 <code>.tolist()</code> 到 CPU 做搬迁规划，
+      <code>_materialize_inflight_write_set()</code> 也有 D2H 同步；eager free 另有 <code>.item()</code> 检查。</div>
+    <p style="">PD 传输使用已发布的物理地址，期间不能重定位对应数据。
+      Scheduler 把 <code>unified_memory_disagg_move_gate()</code> 安装给 composite 的所有成员：
+      Prefill 检查 inflight 队列及 pending chunk RID；Decode 检查 transfer 队列及
+      <code>has_published_destinations</code>，覆盖“地址已发布、请求尚未入队”的窗口。
+      END 池的 <code>_flush()</code> 在 gate 关闭时返回，容量核算也不把受保护邻池的洞算作可借字节。
+      安装 gate 要求 composite 使用 lazy 模式。<a href="#sg-src-gates">[S7]</a></p>
+    <p style=""><strong>此快照的支持边界需要单独保留：</strong>
+      通用 unified-memory 在启动时拒绝 HiCache/LMCache，不能描述成已经接入 HiCache move gate。
+      源码也没有摘要所称的统一 <code>moves_blocked()</code> 或 <code>_commit_move_batch</code> gate assert；
+      float 的 <code>make_room()</code> / <code>compact_holes()</code> 中未见同样的 PD gate 入口检查。
+      成员上安装 gate 属性，不足以证明所有搬移路径都已执行该检查。
+      本章只确认 END flush 的现有保护，不将 tri-pool 的全部传输安全性写成已验证结论。</p>
+
+    <h3 id="sglang-dsv4">4.7 DeepSeek-V4：独立的多池方案，勿与通用 unified-memory 混用</h3>
+    <p>DS-V4 常规路径分别管理 SWA KV、C4/C128 压缩 KV、C4 indexer 和压缩状态。
+      设逻辑 token 容量为 N，常规无 HiSparse 路径按 SWA≈<code>0.1N</code>、C4=<code>N/4</code>、
+      C128=<code>N/128</code> 推导池大小，再计入层数、dtype、并发状态预算及页对齐。
+      默认逻辑页为 256 token，C4/C128 物理页分别是 64/2 个压缩 token；SWA 页依模型 window 配置。
+      这些容量在初始化时确定，没有通用 unified-memory 的跨池动态借用。
+      <a href="#sg-src-dsv4">[S8]</a></p>
+    <p style="">ROCm 另有 <code>unified_kv_triton</code>：每层把 SWA 请求环与压缩 KV 放入统一布局，
+      两块区域按请求槽数及压缩容量预先划定；indexer 和压缩状态仍独立。
+      该路径的 <code>DeepSeekV4UnifiedKVPool</code> 与本章的 <code>UnifiedKVPool</code> 是不同实现，
+      合并存储布局也不意味着边界能够动态浮动。</p>
+
+    <h3 id="sglang-audit" style="">4.8 参考摘要核验：保留机制，修正绝对化结论</h3>
+    <p>所给行号有明显漂移，部分符号在当前快照中不存在。
+      下表以实际函数体、调用点和启动检查核实，源码入口见第 7 章。</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>参考说法</th><th>核验结果</th></tr></thead>
+      <tbody style="">
+        <tr style=""><td style=""></td><td style=""><br></td></tr>
+        <tr><td>lazy 只在 alloc 短缺时执行压实</td>
+          <td style="">不成立。调度器也调用 <code>flush_opportunistic()</code>；float 使用独立的按需搬移策略。</td></tr>
+        <tr style=""><td><br></td><td style=""></td></tr>
+        <tr><td style="">PD/HiCache 全部由统一 gate 保护，且检查 offload inflight</td>
+          <td style="">当前只确认 PD END flush 保护；Decode predicate 未包含 offload inflight。
+            HiCache/LMCache 被启动检查排除，float 搬移入口的完整 gate 保护未获代码支持。</td></tr>
+        <tr><td style="">全程无 host 阻塞，唯一同步是洞列表 <code>.tolist()</code></td>
+          <td style="">不成立。事件依赖用 stream wait，但洞规划、inflight write-set、eager 检查存在不同 host 同步点。</td></tr>
+        <tr style=""><td><br></td><td style=""><br></td></tr>
+      </tbody>
+    </table></div></section>
 
   <section style="font-size: 15px; font-weight: 400;">
-    <h2 style="">5. “Full 和 Linear Cache 能否复用？”需要拆成五个问题</h2>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>复用的含义</th><th>答案</th><th>原因或条件</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>用 full KV 的内容代替 linear state</td>
-            <td><strong>不能直接复用。</strong></td>
-            <td>
-              两者来自不同层、不同投影与不同计算。
-              Linear state 是特定递推过程的结果，full KV 不是它的等价编码。
-            </td>
-          </tr>
-          <tr>
-            <td>同一请求让两类活跃缓存占用同一段显存</td>
-            <td><strong>通常不能。</strong></td>
-            <td>
-              下一步解码同时需要各层的历史信息。
-              层执行时间不同，不代表其缓存的生命周期不重叠。
-            </td>
-          </tr>
-          <tr>
-            <td>释放后，把同一地址分配给另一种缓存</td>
-            <td><strong>原理上可以，实现有条件。</strong></td>
-            <td>
-              需要分配器支持，满足大小、对齐、映射和同步约束，
-              并确保没有活跃引用或仍在访问的 kernel。
-            </td>
-          </tr>
-          <tr>
-            <td>相同前缀的多个请求共享缓存</td>
-            <td><strong>可以分别复用两类前缀数据，取决于实现。</strong></td>
-            <td>
-              Full 复用 KV；linear 复用对应位置的状态检查点。
-              继续写入时需要私有状态、复制或等价的写时保护。
-            </td>
-          </tr>
-          <tr>
-            <td>把 full 池的空闲容量实时借给 linear 池</td>
-            <td><strong>不能默认存在。</strong></td>
-            <td>
-              统一混合分配器也受物理布局约束；
-              独立预分配池通常需要额外动态内存机制才能跨池扩容。
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <div class="note good">
-      <strong>可行的优化目标：</strong>
-      尽量让已经没有语义用途的内存回到可用容量，
-      同时保留能节省后续计算的前缀数据。
-      这与“让 full KV 和 linear state 共用一份内容”是不同问题。</div></section>
-
-  <section style="font-size: 15px; font-weight: 400;">
-    <h2 style="">6. 应当区分的四类浪费</h2>
+    <h2 style="">5. 应当区分的四类浪费</h2>
     <div class="table-wrap">
       <table>
         <thead>
@@ -409,10 +477,10 @@ G_C128_state = 31 × 32,832 = 1,017,792 B
       空闲 slot、padding 和可淘汰前缀都可能仍处于已分配大张量中。</p></section>
 
   <section style="font-size: 15px; font-weight: 400;">
-    <h2 style="">7. 源码核验入口</h2>
+    <h2 style="">6. 源码核验入口</h2>
     <p class="muted">
-      以下链接对应本次工作区中实际核对的实现入口；GitHub main 会变化，
-      但本地快照中的相同符号可直接定位。
+      SGLang 的 [S1]–[S8] 链接直接指向工作区快照，函数名作为核验锚点；
+      vLLM 链接及 SGLang 补充入口中的 GitHub main 会变化，不能据此把其他版本的行号与行为套入本地快照。
     </p>
 
     <h3>vLLM</h3>
@@ -458,6 +526,76 @@ G_C128_state = 31 × 32,832 = 1,017,792 B
     </ul>
 
     <h3>SGLang</h3>
+    <ol>
+      <li id="sg-src-init"><strong>[S1] 初始化与开关：</strong>
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/mem_cache/kv_cache_configurator.py">kv_cache_configurator.py</a>
+        的 <code>_init_pools()</code>、<code>_should_enable_lazy_compaction()</code>：
+        选择二池/三池统一路径，排除 DS-V4，lazy 默认开启；
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/arg_groups/fields/memory.py">fields/memory.py</a>
+        的 <code>enable_unified_memory=False</code>。</li>
+      <li id="sg-src-layout"><strong>[S2] 子池与物理布局：</strong>
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/mem_cache/memory_pool.py">memory_pool.py</a>
+        的 <code>HybridLinearKVPool</code>、<code>MambaPool</code>；
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/mem_cache/unified_memory_pool.py">unified_memory_pool.py</a>
+        的 <code>SubPoolSpec</code>、<code>UnifiedKVPool.__init__()</code>、<code>init_unified_mamba_pools()</code>；
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/mem_cache/layout/page_major.py">layout/page_major.py</a>
+        的 <code>build_mha_views()</code>、<code>build_mla_views()</code>。</li>
+      <li id="sg-src-budget"><strong>[S3] 容量预算：</strong>
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/mem_cache/kv_cache_configurator.py">kv_cache_configurator.py</a>
+        的 <code>_profile_available_bytes()</code>、<code>_handle_max_mamba_cache()</code>；
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/arg_groups/fields/schedule.py">fields/schedule.py</a>
+        的 <code>mamba_full_memory_ratio</code>（fallback 0.9）及 <code>max_mamba_cache_size</code>。
+        <code>init_unified_mamba_pools()</code> 的日志明确指出比例不决定 runtime split。</li>
+      <li id="sg-src-pressure"><strong>[S4] 分配与压实：</strong>
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/mem_cache/allocator/unified_sub_pool.py">allocator/unified_sub_pool.py</a>
+        的 <code>_relieve_for_alloc()</code>、<code>_available_tokens()</code>、<code>_free_lazy()</code>、
+        <code>_flush()</code>、<code>_commit_move_batch()</code>、<code>FloatMultiEndedAllocator</code>；
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/mem_cache/allocator/unified_mamba.py">allocator/unified_mamba.py</a>
+        的 Full / State 独立分配与可调度容量；
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/mem_cache/allocator/unified_hybrid_swa.py">allocator/unified_hybrid_swa.py</a>
+        的联合容量核算、<code>UnifiedMambaSWATokenToKVPoolAllocator._flush_targets()</code>。
+        Float 先做边界吸收；END 池默认 lazy，不应把这条配置套到 float 上。</li>
+      <li id="sg-src-scheduler"><strong>[S5] 驱逐与请求回退：</strong>
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/mem_cache/unified_radix_cache.py">unified_radix_cache.py</a>
+        的 <code>evict_for_alloc()</code> 与 Full donor；
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/managers/schedule_batch.py">schedule_batch.py</a>
+        的 <code>check_decode_mem()</code>、<code>retract_decode()</code>；
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/managers/scheduler.py">scheduler.py</a>
+        的 <code>flush_opportunistic()</code> 调用点。
+        这些是上层控制逻辑，不在 <code>_relieve_for_alloc()</code> 函数体内。</li>
+      <li id="sg-src-index"><strong>[S6] V2P 与后端索引：</strong>
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/mem_cache/kv_index_translator.py">kv_index_translator.py</a>
+        的 <code>build_index_table()</code>、<code>fill_packed_read_stream()</code>、
+        <code>rebind_write_loc()</code>、<code>fill_capture_write_loc()</code>；
+        <a href="../../sglang-release-v0.5.20/python/sglang/kernels/ops/kvcache/kv_read_table.py">kv_read_table.py</a>
+        与 <a href="../../sglang-release-v0.5.20/python/sglang/kernels/ops/memory/virtual_slot.py">virtual_slot.py</a>
+        的融合转换 kernel；
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/layers/attention/triton_backend.py">triton_backend.py</a>、
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/layers/attention/hybrid_linear_attn_backend.py">hybrid_linear_attn_backend.py</a>
+        的 metadata / graph replay；
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/runtime_context.py">runtime_context.py</a>
+        的 <code>mamba_cache_chunk_size()</code>、<code>mamba_track_grid()</code>。</li>
+      <li id="sg-src-gates"><strong>[S7] 同步、PD gate 与支持边界：</strong>
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/arg_groups/kv_cache_hook.py">kv_cache_hook.py</a>
+        的 <code>handle_unified_memory_pool()</code>、<code>handle_page_major_kv_layout()</code>：
+        核验 HiCache/LMCache 拒绝条件及实际 backend 白名单；
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/disaggregation/utils.py">disaggregation/utils.py</a>
+        的 <code>unified_memory_disagg_move_gate()</code>；
+        <code>scheduler.py</code> 的 gate 安装，<code>unified_sub_pool.py</code> 的 gate 检查与 host 同步点。
+        <a href="../../sglang-release-v0.5.20/test/registered/unit/mem_cache/test_unified_tri_pool.py">test_unified_tri_pool.py</a>
+        的 <code>test_the_settle_is_a_stream_wait_not_a_host_sync</code> 仅验证 settle 函数，不能推广为整条路径无 host 同步。</li>
+      <li id="sg-src-dsv4"><strong>[S8] DeepSeek-V4 独立实现：</strong>
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/model_executor/pool_configurator.py">pool_configurator.py</a>
+        的 <code>DSV4PoolConfigurator</code>；
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py">deepseek_v4_memory_pool.py</a>
+        的 <code>DeepSeekV4SingleKVPool.create_buffer()</code>、<code>DeepSeekV4UniformFP8KVPool</code>、
+        <code>DeepSeekV4UnifiedKVPool</code>；
+        <a href="../../sglang-release-v0.5.20/python/sglang/kernels/ops/attention/dsv4/unified_kv_kernels/env_gate.py">unified_kv_kernels/env_gate.py</a>
+        的 ROCm 开关；
+        <a href="../../sglang-release-v0.5.20/python/sglang/srt/arg_groups/model_overrides/deepseek_v4.py">model_overrides/deepseek_v4.py</a>
+        的页大小及 SWA token 比例默认值。</li>
+    </ol>
+    <p class="muted">以下 GitHub main 链接仅作补充导航，具体结论以上述本地快照为准。</p>
     <ul>
       <li>
         <a href="https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/memory_pool.py" target="_blank" rel="noopener">memory_pool.py</a>：
@@ -482,9 +620,10 @@ G_C128_state = 31 × 32,832 = 1,017,792 B
     <div class="note warning">
       <strong>本文未下结论的事项：</strong>
       Qwen3.6／3.7／3.8 在指定发行版中是否可用；
-      最新版本是否增加跨池动态借用；
-      当前默认检查点策略、默认分配比例与具体命令行参数。
-      这些都需要真实源码与运行配置支持，不能从架构原理推断。
+      其他版本是否改变后端、PD/HiCache 支持边界；
+      各模型实测的吞吐、压实开销和整体有效显存利用率。
+      第 4 章已核实当前快照的动态共享实现、通用默认比例与相关参数；
+      模型覆盖值及运行时性能仍需结合实际配置和测量。
     </div>
   </section>
 
@@ -495,5 +634,6 @@ G_C128_state = 31 × 32,832 = 1,017,792 B
   </main>
   
   
+
 
 </body></html>
