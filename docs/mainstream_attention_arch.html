@@ -43,11 +43,37 @@ H = max { h ≤ L :
 </section>
 <section id="linear"><div class="section-title"><span class="num">03 /</span><h2>Linear / Mamba：匹配的是状态检查点</h2></div>
 <div class="grid2"><article class="card"><h3>Linear attention</h3><p>以简化形式为例，历史可累计为矩阵状态 <code>Sₜ = Sₜ₋₁ + φ(kₜ)vₜᵀ</code>，读出为 <code>φ(qₜ)ᵀSₜ</code>；归一化变体还需要累计向量。GDN、KDA 等采用门控、遗忘或 delta 更新，具体状态结构不同。</p><p><strong>代表：</strong>Qwen3-Next / 3.5 / 3.6 的 Gated DeltaNet + full attention；Qwen3.8-Flash-Next 的 GDN + QSA；Kimi K3、Ling-3.1-flash 的 KDA + gated MLA。</p></article><article class="card"><h3>Mamba / SSM</h3><p>选择性状态空间模型通过输入相关的递推更新维护 SSM state。Mamba 系列通常还维护短卷积的历史缓冲区；只保存 SSM 矩阵并不足以恢复整个模块。</p><p><strong>代表：</strong>Jamba2 的 Mamba + attention；Nemotron 3.5 Lightning 的 Mamba-2 + attention；Falcon-H1 系列的并行 Mamba-2 / GQA 分支。</p></article></div>
-<div class="flow" aria-label="递推前缀恢复流程"><div class="box">完整前缀 x₁ … xₕ</div><span class="arrow">→</span><div class="box">保存 Sₕ + conv buffer</div><span class="arrow">→</span><div class="box">新分支复制状态</div><span class="arrow">→</span><div class="box">继续 xₕ₊₁ …</div></div>
+<h3>KDA / GDN 与传统 Mamba：缓存形式相似，更新语义不同</h3>
+<p><strong>GDN（Gated DeltaNet）与 KDA（Kimi Delta Attention）维护的是 KV 关联矩阵；Mamba-1 / Mamba-2 维护的是状态空间隐状态。</strong>两者都把长历史压入固定形状的递推状态，并可配套短因果卷积。这里“传统 Mamba”指 Jamba 所用的 Mamba-1、Nemotron-H 所用的 Mamba-2 等 SSM 路线；具体代际以模型配置为准，不能仅按系列名判断。</p>
+<div class="table-wrap"><table><thead><tr><th>对比项</th><th>GDN / KDA（以 Qwen / Kimi 实现为例）</th><th>Mamba-1 / Mamba-2（如 Jamba / Nemotron-H）</th></tr></thead><tbody>
+<tr><td>长期缓存对象</td><td><code>recurrent_state</code>：每个 head 的 K→V 关联矩阵，汇总历史写入。GDN 用每 head 的标量遗忘门；KDA 将遗忘细化到 key 通道。</td><td><code>ssm_state</code>：SSM 的隐状态，由状态转移、输入写入与读出参数控制。Mamba-1 常按通道组织，Mamba-2 常按 head 组织。</td></tr>
+<tr><td>短期缓存对象</td><td><code>conv_cache</code> / <code>conv_state</code>：保存 q/k/v 投影流在短卷积前的近期输入。Kimi 可将 q、k、v 的独立缓冲拼接存放。</td><td><code>conv_state</code>：Mamba-1 缓存内部 x 流的卷积输入；Mamba-2 缓存拼接的 x/B/C 流。不是 q/k/v 的逐 token KV cache。</td></tr>
+<tr><td>递推的关键操作</td><td>先遗忘，再用当前 key 查询旧记忆，计算 value 预测误差并执行 delta 纠错写入，最后由 query 读出。</td><td>用离散化后的状态转移衰减旧状态，注入当前输入，再由 C 读出；通常还有 D 的直接通路与输出门控。</td></tr>
+<tr><td>典型单层、单序列形状</td><td>数学上 <code>[Hᵥ, dₖ, dᵥ]</code>；本地 vLLM GDN 实际按 <code>[Hᵥ, dᵥ, dₖ]</code> 存储，KDA 为 <code>[H, d, d]</code>。</td><td>Mamba-1 为 <code>[D_inner, d_state]</code>；Mamba-2 为 <code>[H, d_head, d_state]</code>。维度相似不意味着状态可互换。</td></tr>
+</tbody></table></div>
+<p class="source-note">形状省略缓存槽、层与 TP 分片维度。宽度为 w 的卷积在数学上需要最近 w−1 个输入；实际缓冲可能含填充、推测解码槽或不同轴序。这里的 conv_cache 是通用称呼，本地 vLLM 对应变量通常叫 conv_state。短卷积是这些具体模块的组成部分，并非所有 linear attention 都必需。</p>
+<div class="note"><strong>读代码时按算子判断，不按缓存名判断。</strong>本地 vLLM 的 Qwen GDN 将第二个缓存也命名为 <code>ssm_state</code>，Kimi KDA 则叫 <code>recurrent_state</code>；它们都复用了 Mamba 状态管理接口。目录名、缓存池名或 <code>MambaManager</code> 表示共用管理设施，不能据此把 delta-rule 算子解释成 Mamba SSM。见 [13]–[15]。</div>
+<h4>递推公式：delta 纠错与 SSM 状态转移</h4>
+<p>以下统一用列向量、单 head 的 <code>S ∈ ℝ^(dₖ×dᵥ)</code> 解释 GDN / KDA；q/k/v 指短卷积与相应预处理后的向量。公式省略缩放、归一化及输出门控，物理张量可采用转置布局。</p>
+<pre><code>GDN：S̄ₜ = αₜ Sₜ₋₁                    // 每 head 一个遗忘系数
+KDA：S̄ₜ = diag(αₜ) Sₜ₋₁              // key 通道各自遗忘
+两者：δₜ = vₜ − S̄ₜᵀ kₜ               // 当前 value 与旧记忆预测之差
+      Sₜ = S̄ₜ + βₜ kₜ δₜᵀ            // delta-rule 纠错写入
+      oₜ = Sₜᵀ qₜ                      // 从更新后的记忆读出
+
+Mamba：hₜ = Āₜ hₜ₋₁ + B̄ₜ uₜ          // 离散 SSM 的概念形式
+       yₜ = Cₜ hₜ + D uₜ               // 状态读出 + 直接通路</code></pre>
+<p>GDN / KDA 的 β 控制写入强度，α 控制遗忘；实现常传入 α 的对数门值。Mamba 的 Ā/B̄ 由连续参数和输入相关步长 Δ 等得到，B/C 也随输入变化。其核心更新没有上述 <code>v − S̄ᵀk</code> 的 delta 纠错项。Mamba-2 的 SSD 可写成结构化 attention 形式并以矩阵运算加速，但仍保持其 SSM 更新语义。</p>
+<h4>单 token decode：先推进卷积，再推进长期状态</h4>
+<div class="grid2"><article class="card"><h3>GDN / KDA</h3><ol><li>hidden state 经投影得到 q/k/v、遗忘门、写入门及输出门。</li><li>从 conv_cache 取近期投影输入，执行短因果卷积与激活，更新缓冲；按模型做 q/k 归一化等预处理。</li><li>读取 recurrent_state，按遗忘 → delta 纠错 → query 读出的顺序得到输出，并写回新矩阵状态。</li><li>执行模型规定的输出归一化、门控与输出投影。</li></ol></article><article class="card"><h3>Mamba-1 / Mamba-2</h3><ol><li>Mamba-1 投影得到内部 x 与门 z；x 经短卷积后再生成 Δ/B/C。Mamba-2 则先投影得到 z、x、B、C、Δ 等分支。</li><li>读取并更新 conv_state：Mamba-1 卷积 x，Mamba-2 卷积 x/B/C。</li><li>用当前 Δ、A、B 和输入更新 ssm_state，以 C 读出并合并 D 直接通路。</li><li>执行输出门控、相应归一化与输出投影；细节依 Mamba 代际和模型配置而定。</li></ol></article></div>
+<h4>多 token prefill：并行处理，保存相同边界的两类状态</h4>
+<p>Prefill 不必逐 token 调用 decode：GDN / KDA 常用 chunk delta-rule 内核，Mamba-1 常用 selective scan，Mamba-2 常用 SSD / chunk scan。它们批量处理新 token，接收命中点的初始状态，并写回末端递推状态与卷积尾部；内核融合可能合并步骤。Chunk 中间张量属于工作区，不等同于必须长期保存的前缀缓存。</p>
+<div class="flow" aria-label="递推前缀恢复流程"><div class="box">完整前缀 x₁ … xₕ</div><span class="arrow">→</span><div class="box">保存同一 h 的 recurrent / SSM state + conv_cache</div><span class="arrow">→</span><div class="box">新分支复制状态</div><span class="arrow">→</span><div class="box">后缀 prefill / 单步 decode</div></div>
+<div class="note amber"><strong>两份缓存缺一不可，也不能错位。</strong>例如恢复 h 处的 recurrent_state，却保留 h+8 处的 conv_cache，下一步 q/k/v 就会由错误的短历史生成；长期状态正确也无法保证续算正确。反过来，只保留卷积尾部只能恢复局部特征，无法恢复此前积累的关联矩阵或 SSM 隐状态。</div>
 <div class="rule"><strong>命中规则：</strong>需要 h 处所有递推层的完整快照。命中该快照后，纯递推层不需要逐个恢复 1…h 的旧状态；但如果还混有 full / MLA / QSA 层，仍需同时满足这些层的缓存条件。</div>
 <p><strong>不能把最终状态任意“截短”。</strong>假设两请求共享前 1000 token，但只保留了 768 和 1024 处的快照：1024 的状态包含分叉后的输入，不能拿来续算 1000。应恢复 768，再计算 232 token 到公共前缀末端。门控递推一般不可逆，不能假设从 1024 回滚即可。</p>
 <p><strong>快照与内存的取舍：</strong>每个活动请求只需固定形状状态；若每隔 C token 存一个快照，前缀缓存中的快照总量仍会随检查点数量增长。稀疏保存快照能省缓存，但增加命中后重放的尾部。</p>
-<p class="source-note">架构依据见 [1]–[3]；实际快照命中逻辑见 [10]–[11]。Linear 与 Mamba 的状态不可跨模型或跨层类型互换。</p>
+<p class="source-note">架构依据见 [1]–[3]；缓存对象、形状及计算路径核对见 [13]–[15]（2026-10-19 补充，本地源码）；实际快照命中逻辑见 [10]–[11]。Linear 与 Mamba 的状态不可跨模型或跨层类型互换。</p>
 </section>
 <section id="swa"><div class="section-title"><span class="num">04 /</span><h2>SWA：前缀身份完整，物理 KV 可以只留窗口</h2></div>
 <p>Sliding Window Attention 限制每个 query 直接读取最近一段历史。它缩短直接访问范围，但深层表示可以间接携带更早的信息，因此不能把 W 理解成整个模型绝对的有效感受野。</p>
@@ -104,6 +130,9 @@ H = max { h ≤ L :
 <p>[10] <a href="../../vllm-releases-v0.29.0/vllm/v1/core/single_type_kv_cache_manager.py">vLLM v0.29.0：本地缓存管理器</a><br>FullAttentionManager（约 688 行）、SlidingWindowManager（888 行）、MambaManager（1363 行）。<a href="https://github.com/vllm-project/vllm/blob/v0.29.0/vllm/v1/core/single_type_kv_cache_manager.py">上游版本链接</a>。</p>
 <p>[11] SGLang v0.5.20：本地 <a href="../../sglang-release-v0.5.20/python/sglang/srt/mem_cache/unified_cache/components/swa.py">SWA 组件</a> / <a href="../../sglang-release-v0.5.20/python/sglang/srt/mem_cache/unified_cache/components/mamba.py">Mamba 组件</a><br>窗口范围验证、快照网格与混合分支边界。</p>
 <p>[12] <a href="../../vllm-releases-v0.29.0/vllm/models/deepseek_v4/compressor.py">vLLM：本地 DeepSeek-V4 compressor</a><br><code>overlap = compress_ratio == 4</code>、CompressorStateCache、KV / score partial state；<a href="../../vllm-releases-v0.29.0/vllm/models/deepseek_v4/attention.py">主 attention 与 indexer / SWA 组合</a>。</p>
+<p>[13] vLLM v0.29.0：<a href="../../vllm-releases-v0.29.0/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py">Qwen GDN</a> / <a href="../../vllm-releases-v0.29.0/vllm/model_executor/layers/mamba/gdn/kimi_gdn_linear_attn.py">Kimi KDA</a><br>卷积与 recurrent 缓存读取、chunk prefill 与 recurrent decode；GDN 中的 ssm_state 命名。</p>
+<p>[14] vLLM v0.29.0：<a href="../../vllm-releases-v0.29.0/vllm/model_executor/layers/mamba/mamba_mixer.py">Mamba-1 mixer</a> / <a href="../../vllm-releases-v0.29.0/vllm/model_executor/layers/mamba/mamba_mixer2.py">Mamba-2 mixer</a><br>x 与 x/B/C 卷积、SSM scan / update；<a href="../../vllm-releases-v0.29.0/vllm/model_executor/models/jamba.py">Jamba</a> / <a href="../../vllm-releases-v0.29.0/vllm/model_executor/models/nemotron_h.py">Nemotron-H</a> 的模块接入。</p>
+<p>[15] <a href="../../vllm-releases-v0.29.0/vllm/model_executor/layers/mamba/mamba_utils.py">vLLM：状态形状计算</a> / <a href="../../sglang-release-v0.5.20/python/sglang/srt/mem_cache/memory_pool.py">SGLang：状态池</a><br>mamba1 / mamba2 / gated_delta_net / kda_state_shape；SGLang 区分 GDN 每 head 标量门与 KDA 每 key 通道向量门。</p>
 </div><p class="source-note">离线阅读无需网络。来源中的相对链接依赖当前工作区目录结构；单独分享本 HTML 时，外部官方链接仍可作为参考。本页关于恢复条件的公式是概念模型，并非声称各框架统一使用同一算法。</p>
 </section>
 </main><footer>ATTENTION / CACHE FIELD GUIDE &nbsp; · &nbsp; 以完整前缀确定身份，以可恢复状态确定命中。</footer>
