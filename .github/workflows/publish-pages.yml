@@ -1,0 +1,105 @@
+name: Publish knowledge base
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '.github/**'
+  issues:
+    types: [opened, edited, closed, reopened, deleted, transferred]
+  workflow_dispatch:
+
+# Serialize whole builds, not only deployments. Each run reads all current open
+# submissions, so a newer issue never replaces the site with a one-item list.
+concurrency:
+  group: knowledge-base-pages
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: read
+      pages: read
+    outputs:
+      target_status: ${{ steps.build.outputs.target_status }}
+      target_reason_b64: ${{ steps.build.outputs.target_reason_b64 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Run regression tests
+        run: node --test tests/*.test.mjs
+      - name: Check browser scripts
+        run: |
+          node --check docs/community.js
+          node --check docs/share.js
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+      - name: Build all active shares
+        id: build
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
+        run: node scripts/build-shares.mjs
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  notify:
+    needs: [build, deploy]
+    if: >-
+      always() && !cancelled() && github.event_name == 'issues' &&
+      github.event.action != 'deleted' && github.event.action != 'transferred' &&
+      startsWith(github.event.issue.title, '[分享]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Reply with publication status
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SHARE_STATUS: ${{ needs.build.outputs.target_status }}
+          SHARE_REASON_B64: ${{ needs.build.outputs.target_reason_b64 }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          PAGES_BASE_URL: ${{ needs.deploy.outputs.page_url }}
+        run: node scripts/notify-share.mjs

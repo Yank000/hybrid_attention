@@ -1,0 +1,51 @@
+name: 上传分享文档
+description: 上传自包含 HTML 或 PDF，自动发布到知识库，无需人工审批。
+title: "[分享] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        上传后自动构建发布，通常需要等待数分钟。请勿提交隐私或没有分享权限的内容。
+        支持一个自包含 HTML（含内嵌图片/脚本）或 PDF，最大 20 MiB。
+        HTML 在隔离环境运行，不支持外部资源、网络请求、弹窗和自动下载。
+        修改本 Issue 可更新分享；关闭 Issue 可从网站撤下（不会删除 GitHub 原始附件）。
+  - type: input
+    id: document-title
+    attributes:
+      label: 文档标题
+      description: 显示在首页与分享页，最多 120 字。
+      placeholder: 例如：混合注意力显存实验笔记
+    validations:
+      required: true
+  - type: textarea
+    id: document-description
+    attributes:
+      label: 文档简介
+      description: 用简短文字介绍内容，最多 1000 字。
+    validations:
+      required: true
+  - type: dropdown
+    id: document-category
+    attributes:
+      label: 文档分类
+      options:
+        - 调研
+        - 实验
+        - 工具
+        - 其他
+    validations:
+      required: true
+  - type: input
+    id: document-tags
+    attributes:
+      label: 文档标签（可选）
+      description: 使用中英文逗号分隔，最多 8 个，每个最多 30 字。
+      placeholder: vLLM, KV Cache
+  - type: textarea
+    id: document-attachment
+    attributes:
+      label: 文档附件
+      description: 拖入一个 .html、.htm 或 .pdf 文件，等待 GitHub 上传完成后再提交。请勿只粘贴本地路径或外部网站链接。
+      placeholder: 将文件拖入此处，等待出现 GitHub 附件链接。
+    validations:
+      required: true

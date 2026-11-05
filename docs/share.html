@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>用户分享 · 混合注意力知识库</title>
+  <link rel="stylesheet" href="share.css">
+  <script src="share.js" defer></script>
+</head>
+<body>
+  <header>
+    <a href="index.html#community">← 返回知识库</a>
+    <h1 id="share-title">用户分享</h1>
+    <p id="share-meta"></p>
+    <p id="share-description"></p>
+    <div class="actions">
+      <button id="copy-link" type="button" hidden>复制分享链接</button>
+      <a id="download" hidden>下载文档</a>
+      <a id="source" target="_blank" rel="noopener noreferrer" hidden>查看投稿 / 更新记录</a>
+    </div>
+    <p id="status" role="status" aria-live="polite">正在读取分享…</p>
+    <p class="notice">用户投稿内容由上传者提供。HTML 在隔离环境运行，外部资源与网络请求被禁用。请勿在文档内输入敏感信息。</p>
+  </header>
+  <main>
+    <iframe id="document" title="分享文档" sandbox="allow-scripts" referrerpolicy="no-referrer" hidden></iframe>
+    <noscript>请启用 JavaScript 读取分享文档。</noscript>
+  </main>
+</body>
+</html>

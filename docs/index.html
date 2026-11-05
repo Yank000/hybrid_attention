@@ -4,6 +4,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="share-repository" content="Yank000/hybrid_attention">
+  <link rel="stylesheet" href="community.css">
+  <script src="community.js" defer></script>
   <title>混合注意力知识库 · 架构、显存与缓存</title>
   <style>
     :root {
@@ -395,6 +398,20 @@
         <li><a href="agentx_multi_session_replay.html">AgentX 多会话并发离线回放</a></li>
       </ul>
     </noscript>
+    <section id="community" class="community" aria-labelledby="community-title">
+      <div class="community-heading">
+        <h2 id="community-title">用户分享</h2>
+        <div class="community-actions">
+          <button id="community-refresh" class="community-refresh" type="button">刷新分享</button>
+          <a id="community-submit" class="community-submit" href="https://github.com/Yank000/hybrid_attention/issues/new?template=share.yml" target="_blank" rel="noopener noreferrer">上传分享文档 ↗</a>
+        </div>
+      </div>
+      <p class="community-description">通过 GitHub 投稿自包含 HTML 或 PDF，无需人工审批。自动部署完成后，所有访客都能访问分享。上方搜索同时检索用户分享。</p>
+      <label>分享分类<select id="community-category" class="community-category"><option value="">全部</option><option>调研</option><option>实验</option><option>工具</option><option>其他</option></select></label>
+      <p id="community-status" class="community-status" role="status" aria-live="polite">正在加载用户分享…</p>
+      <div id="community-pages" class="grid"></div>
+      <noscript>请启用 JavaScript 查看用户分享，也可直接通过上方入口投稿。</noscript>
+    </section>
     <p class="footnote">页面中的缓存尺寸与默认配置以各文档标注的源码版本、模型配置和后端条件为准。理论有效负载、cache spec 页大小与实际显存分配需要分别理解。</p>
   </main>
   <footer><span>HYBRID ATTENTION / 技术知识库</span><span>本地 HTML · 导航与检索均可离线使用</span></footer>
