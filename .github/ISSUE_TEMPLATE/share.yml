@@ -1,14 +1,30 @@
-name: 上传文档附件
-description: 上传自包含 HTML 或 PDF，自动发布到知识库，无需人工审批。
+name: 分享文档（链接 / 附件）
+description: 分享文档网址或上传 HTML/PDF 附件；Issue 标题必须保留 [分享] 前缀。
 title: "[分享] "
 body:
   - type: markdown
     attributes:
       value: |
-        上传后自动构建发布，通常需要等待数分钟。请勿提交隐私或没有分享权限的内容。
-        支持一个自包含 HTML（含内嵌图片/脚本）或 PDF，最大 20 MiB。
-        HTML 在隔离环境运行，不支持外部资源、网络请求、弹窗和自动下载。
+        > [!WARNING]
+        > **Issue 标题必须以 `[分享]` 开头，不能删除或修改 `[分享]` 前缀！**
+        > 正确示例：`[分享] vLLM SWA cache`。删除前缀后，即使构建成功，文档也不会出现在首页。
+
+        **选择一种分享方式，只填写对应的“文档链接”或“文档附件”，另一项留空。**
+
+        - **链接分享**：填写完整 HTTP/HTTPS 文档网址，不复制或托管原网站内容。
+        - **附件分享**：上传一个 UTF-8 自包含 HTML 或 PDF，最大 20 MiB；HTML 不支持外部资源、网络请求、弹窗和自动下载。
+
+        提交后自动构建发布，通常需要等待数分钟，无需人工审批。请勿提交隐私或没有分享权限的内容。
         修改本 Issue 可更新分享；关闭 Issue 可从网站撤下（不会删除 GitHub 原始附件）。
+  - type: checkboxes
+    id: submission-rules
+    attributes:
+      label: 发布规则确认
+      options:
+        - label: 我确认 Issue 标题以 [分享] 开头，且不会删除或修改此前缀。
+          required: true
+        - label: 我只填写文档链接或文档附件中的一项，并选择对应的分享方式。
+          required: true
   - type: input
     id: document-title
     attributes:
@@ -22,6 +38,7 @@ body:
     attributes:
       label: 分享方式
       options:
+        - 链接分享
         - 附件分享
       default: 0
     validations:
@@ -50,11 +67,19 @@ body:
       label: 文档标签（可选）
       description: 使用中英文逗号分隔，最多 8 个，每个最多 30 字。
       placeholder: vLLM, KV Cache
+  - type: input
+    id: document-link
+    attributes:
+      label: 文档链接
+      description: 选择“链接分享”时必填；粘贴完整 HTTP/HTTPS 网址。选择“附件分享”时必须留空。
+      placeholder: https://example.com/document
+    validations:
+      required: false
   - type: textarea
     id: document-attachment
     attributes:
       label: 文档附件
-      description: 拖入一个 .html、.htm 或 .pdf 文件，等待 GitHub 上传完成后再提交。请勿只粘贴本地路径或外部网站链接。
+      description: 选择“附件分享”时必填；拖入一个 .html、.htm 或 .pdf 文件，等待上传完成。选择“链接分享”时必须留空。
       placeholder: 将文件拖入此处，等待出现 GitHub 附件链接。
     validations:
-      required: true
+      required: false

@@ -24,7 +24,7 @@ const tick = () => new Promise(done => setImmediate(done));
 
 async function boot(shares = [link, attachment], protocol = 'https:') {
   const nodes = new Map(['knowledge-pages', 'search', 'filters', 'pages', 'share-status', 'share-refresh',
-    'share-link-submit', 'share-file-submit', 'count', 'empty'].map(id => [id, new Node()]));
+    'share-submit', 'count', 'empty'].map(id => [id, new Node()]));
   nodes.get('knowledge-pages').textContent = JSON.stringify(builtIn);
   let current = shares;
   let failed = false;
@@ -65,8 +65,7 @@ test('original documents and both sharing types join the same category grids and
   assert.equal(external.target, '_blank');
   assert.equal(external.rel, 'noopener noreferrer');
   assert.ok(app.cards().some(card => card.href === 'share.html?id=11'));
-  assert.ok(app.get('share-link-submit').href.endsWith('template=share-link.yml'));
-  assert.ok(app.get('share-file-submit').href.endsWith('template=share.yml'));
+  assert.ok(app.get('share-submit').href.endsWith('template=share.yml'));
 });
 
 test('a single category filter, search, count and empty state apply to every document', async () => {

@@ -13,8 +13,7 @@
   const status = document.getElementById('share-status');
   const refresh = document.getElementById('share-refresh');
   const repository = document.querySelector('meta[name="share-repository"]').content;
-  document.getElementById('share-link-submit').href = `https://github.com/${repository}/issues/new?template=share-link.yml`;
-  document.getElementById('share-file-submit').href = `https://github.com/${repository}/issues/new?template=share.yml`;
+  document.getElementById('share-submit').href = `https://github.com/${repository}/issues/new?template=share.yml`;
   let shared = [];
   let selected = null;
   let loading = false;
@@ -115,7 +114,7 @@
         typeof item.author === 'string' && Array.isArray(item.tags) && item.tags.every(tag => typeof tag === 'string') &&
         (item.fileType !== 'link' || safeExternal(item.externalUrl)));
       render();
-      status.textContent = shared.length ? `已同步 ${shared.length} 篇分享，与原有文档统一展示。` : '可分享文档链接或上传 HTML/PDF 附件，发布后自动加入下方分类。';
+      status.textContent = shared.length ? `已同步 ${shared.length} 篇分享，与原有文档统一展示。` : '可分享链接或上传 HTML/PDF；投稿时请保留 Issue 标题的 [分享] 前缀。';
     } catch {
       status.textContent = '分享文档暂时同步失败，请稍后刷新。已显示的文档仍可使用。';
     } finally {

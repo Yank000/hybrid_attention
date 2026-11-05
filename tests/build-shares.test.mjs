@@ -247,3 +247,20 @@ test('editing a submission can switch between attachment and link with a stable 
   assert.equal(second.shares[0].shareType, 'link');
   await assert.rejects(access(join(secondOutput, 'shared/1')));
 });
+
+test('merged form handles checkbox confirmation and the unused source field without changing prefix rules', () => {
+  const confirmation = '### 发布规则确认\n\n- [x] 我确认标题以 [分享] 开头。\n- [x] 我只选择一种方式。\n\n';
+  const linkBody = confirmation + linkIssue().body + '\n\n### 文档附件\n\n_No response_';
+  const fileBody = confirmation + issue().body + '\n\n### 分享方式\n\n附件分享\n\n### 文档链接\n\n_No response_';
+  assert.equal(parseSubmission(issue(1, { body: linkBody })).shareType, 'link');
+  assert.equal(parseSubmission(issue(2, { body: fileBody })).shareType, 'attachment');
+  assert.equal(parseSubmission(issue(1, { title: 'vLLM SWA cache', body: linkBody })), null);
+  assert.equal(parseSubmission(issue(1, { title: '[分享] vLLM SWA cache', body: linkBody })).shareType, 'link');
+});
+
+test('merged form still rejects missing content and simultaneous links and attachments', () => {
+  const empty = linkIssue().body.replace('https://example.com/document?version=2#section', '_No response_') + '\n\n### 文档附件\n\n_No response_';
+  assert.throws(() => parseSubmission(issue(1, { body: empty })), InvalidSubmission);
+  const both = linkIssue().body + `\n\n### 文档附件\n\n[file](${HTML_URL})`;
+  assert.throws(() => parseSubmission(issue(1, { body: both })), InvalidSubmission);
+});
