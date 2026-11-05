@@ -5,8 +5,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="share-repository" content="Yank000/hybrid_attention">
-  <link rel="stylesheet" href="community.css">
-  <script src="community.js" defer></script>
+  <link rel="stylesheet" href="knowledge.css">
+  <script src="knowledge.js" defer></script>
   <title>混合注意力知识库 · 架构、显存与缓存</title>
   <style>
     :root {
@@ -361,6 +361,19 @@
         transform: none
       }
     }
+
+    .section { margin: 36px 0 48px }
+    .section-heading { display: flex; align-items: baseline; gap: 16px; border-bottom: 1px solid var(--line); margin-bottom: 20px; padding-bottom: 12px }
+    .section-heading h2 { margin: 0; font-size: 26px }
+    .section-heading p { margin: 0; font-size: 14px; color: var(--muted) }
+    .section-count { margin-left: auto; white-space: nowrap; color: var(--muted); font-size: 13px }
+    .card h3 { font-size: 23px; line-height: 1.4; margin: 20px 0 12px }
+    .card { overflow-wrap: anywhere }
+    @media(max-width:900px) { .card:last-child { grid-column: auto } }
+    @media(max-width:600px) {
+      .section-heading { flex-wrap: wrap; gap: 6px 14px }
+      .section-heading p { flex-basis: 100%; order: 3 }
+    }
   </style>
 </head>
 
@@ -373,7 +386,7 @@
     <div class="hero">
       <div class="eyebrow">HYBRID ATTENTION FIELD NOTES</div>
       <h1>从注意力架构，<br>读懂<span>缓存与显存。</span></h1>
-      <p class="lead">汇集混合注意力、前缀复用和模型缓存尺寸的技术笔记。沿着历史如何表示、引擎如何管理、对象占用多大的顺序，建立完整认识。</p>
+      <p class="lead">从调研理解架构与缓存，从实验观察显存开销，用工具回放真实负载。</p>
     </div>
     <nav class="trail" aria-label="建议阅读顺序"><strong>建议阅读</strong><a href="mainstream_attention_arch.html">01
         架构与前缀</a><span class="arrow" aria-hidden="true">→</span><a href="hybrid_VRAM_management.html">02 显存管理</a><span
@@ -386,8 +399,14 @@
           <path d="m16 16 5 5" />
         </svg><input id="search" type="search" placeholder="搜索标题、模型或主题…" aria-label="搜索知识页面"></label><span id="count"
         class="muted" role="status" aria-live="polite"></span></div>
+    <div class="share-tools" aria-label="分享文档">
+      <a id="share-link-submit" class="share-submit" href="https://github.com/Yank000/hybrid_attention/issues/new?template=share-link.yml" target="_blank" rel="noopener noreferrer">分享文档链接 ↗</a>
+      <a id="share-file-submit" class="share-submit share-submit-file" href="https://github.com/Yank000/hybrid_attention/issues/new?template=share.yml" target="_blank" rel="noopener noreferrer">上传文档附件 ↗</a>
+      <button id="share-refresh" class="share-refresh" type="button">刷新文档</button>
+    </div>
+    <p id="share-status" class="share-status" role="status" aria-live="polite">链接与附件经 GitHub 投稿，发布后自动加入下方分类。</p>
     <div id="filters" class="filters" role="group" aria-label="按主题筛选"></div>
-    <div id="pages" class="grid"></div>
+    <div id="pages"></div>
     <p id="empty" class="empty" hidden>没有匹配的页面。试试其他关键词，或切换到“全部”。</p>
     <noscript>
       <p>知识页面：</p>
@@ -395,110 +414,80 @@
         <li><a href="mainstream_attention_arch.html">主流注意力架构与前缀匹配</a></li>
         <li><a href="hybrid_VRAM_management.html">混合注意力的显存管理</a></li>
         <li><a href="cache_size_overview.html">模型缓存对象尺寸 overview</a></li>
+        <li><a href="continuous_pressure_1h.html">持续会话显存实验 · 1h+1h</a></li>
         <li><a href="agentx_multi_session_replay.html">AgentX 多会话并发离线回放</a></li>
       </ul>
     </noscript>
-    <section id="community" class="community" aria-labelledby="community-title">
-      <div class="community-heading">
-        <h2 id="community-title">用户分享</h2>
-        <div class="community-actions">
-          <button id="community-refresh" class="community-refresh" type="button">刷新分享</button>
-          <a id="community-submit" class="community-submit" href="https://github.com/Yank000/hybrid_attention/issues/new?template=share.yml" target="_blank" rel="noopener noreferrer">上传分享文档 ↗</a>
-        </div>
-      </div>
-      <p class="community-description">通过 GitHub 投稿自包含 HTML 或 PDF，无需人工审批。自动部署完成后，所有访客都能访问分享。上方搜索同时检索用户分享。</p>
-      <label>分享分类<select id="community-category" class="community-category"><option value="">全部</option><option>调研</option><option>实验</option><option>工具</option><option>其他</option></select></label>
-      <p id="community-status" class="community-status" role="status" aria-live="polite">正在加载用户分享…</p>
-      <div id="community-pages" class="grid"></div>
-      <noscript>请启用 JavaScript 查看用户分享，也可直接通过上方入口投稿。</noscript>
-    </section>
     <p class="footnote">页面中的缓存尺寸与默认配置以各文档标注的源码版本、模型配置和后端条件为准。理论有效负载、cache spec 页大小与实际显存分配需要分别理解。</p>
   </main>
   <footer><span>HYBRID ATTENTION / 技术知识库</span><span>本地 HTML · 导航与检索均可离线使用</span></footer>
 
   <!-- 新增知识页：在下面的 JSON 数组中增加一条记录；格式示例见 README.md。 -->
   <script id="knowledge-pages" type="application/json">
-  [
-    {
-      "title": "主流注意力架构与前缀匹配",
-      "href": "mainstream_attention_arch.html",
-      "category": "架构原理",
-      "description": "从 Linear / Mamba、SWA 到压缩与动态稀疏，理解历史状态如何决定续算条件和前缀命中。",
-      "tags": ["Linear / Mamba", "SWA", "CSA / QSA", "Prefix cache"]
-    },
-    {
-      "title": "混合注意力的显存管理",
-      "href": "hybrid_VRAM_management.html",
-      "category": "引擎实现",
-      "description": "对照 vLLM 与 SGLang，梳理 Qwen、Kimi 和 DeepSeek 的缓存分页、状态管理与混合前缀匹配。",
-      "tags": ["vLLM", "SGLang", "Qwen / Kimi", "DeepSeek"]
-    },
-    {
-      "title": "模型缓存对象尺寸 overview",
-      "href": "cache_size_overview.html",
-      "category": "显存分析",
-      "description": "按模型系列与模型 ID 比较 KV、index key、recurrent 和 conv 的单 unit、单 page 大小及分布。",
-      "tags": ["6 个系列 / 10 个模型", "Token / Request", "KV / State", "分布图"]
-    },
-    {
-      "title": "AgentX 多会话并发离线回放",
-      "href": "agentx_multi_session_replay.html",
-      "category": "显存分析",
-      "description": "支持 1–128 会话共享一个缓存池；循环使用四条完整真实 trace，支持启动间隔与更大缓存预算，比较 checkpoint 浪费与超额需求。",
-      "tags": ["AgentX 真实 trace", "1–128 会话", "Qwen3.8 / Flash Next", "Kimi K3 / DeepSeek V4 Pro", "TP8", "边界审计"]
-    }
-  ]
-  </script>
-  <script>
-    (() => {
-      'use strict';
-      const pages = JSON.parse(document.getElementById('knowledge-pages').textContent);
-      const search = document.getElementById('search');
-      const filters = document.getElementById('filters');
-      const grid = document.getElementById('pages');
-      const count = document.getElementById('count');
-      const empty = document.getElementById('empty');
-      let selectedCategory = null;
-      const categories = [...new Set(pages.map(page => page.category))];
-      const buttons = [];
-      function element(tag, className, text) {
-        const node = document.createElement(tag);
-        if (className) node.className = className;
-        if (text !== undefined) node.textContent = text;
-        return node;
-      }
-      for (const category of [null, ...categories]) {
-        const button = element('button', '', category === null ? '全部' : category);
-        button.type = 'button';
-        button.addEventListener('click', () => { selectedCategory = category; render(); });
-        filters.append(button);
-        buttons.push({ category, button });
-      }
-      function render() {
-        const query = search.value.trim().toLocaleLowerCase();
-        const visible = pages.filter(page =>
-          (selectedCategory === null || page.category === selectedCategory) &&
-          [page.title, page.description, page.category, ...page.tags].join(' ').toLocaleLowerCase().includes(query));
-        grid.replaceChildren();
-        for (const page of visible) {
-          const card = element('a', 'card');
-          card.setAttribute('href', page.href);
-          const top = element('div', 'card-top');
-          top.append(element('span', 'number', String(pages.indexOf(page) + 1).padStart(2, '0') + ' /'), element('span', 'category', page.category));
-          const tags = element('div', 'tags');
-          for (const tag of page.tags) tags.append(element('span', 'tag', tag));
-          const open = element('div', 'open');
-          open.append(element('span', '', '阅读文档'), element('span', '', '↗'));
-          card.append(top, element('h2', '', page.title), element('p', '', page.description), tags, open);
-          grid.append(card);
-        }
-        buttons.forEach(({ category, button }) => button.setAttribute('aria-pressed', String(category === selectedCategory)));
-        count.textContent = visible.length === pages.length ? `${pages.length} 篇知识文档` : `${visible.length} / ${pages.length} 篇知识文档`;
-        empty.hidden = visible.length !== 0;
-      }
-      search.addEventListener('input', render);
-      render();
-    })();
+[
+  {
+    "title": "主流注意力架构与前缀匹配",
+    "href": "mainstream_attention_arch.html",
+    "category": "调研",
+    "description": "从 Linear / Mamba、SWA 到压缩与动态稀疏，理解历史状态如何决定续算条件和前缀命中。",
+    "tags": [
+      "Linear / Mamba",
+      "SWA",
+      "CSA / QSA",
+      "Prefix cache"
+    ]
+  },
+  {
+    "title": "混合注意力的显存管理",
+    "href": "hybrid_VRAM_management.html",
+    "category": "调研",
+    "description": "对照 vLLM 与 SGLang，梳理 Qwen、Kimi 和 DeepSeek 的缓存分页、状态管理与混合前缀匹配。",
+    "tags": [
+      "vLLM",
+      "SGLang",
+      "Qwen / Kimi",
+      "DeepSeek"
+    ]
+  },
+  {
+    "title": "模型缓存对象尺寸 overview",
+    "href": "cache_size_overview.html",
+    "category": "调研",
+    "description": "按模型系列与模型 ID 比较 KV、index key、recurrent 和 conv 的单 unit、单 page 大小及分布。",
+    "tags": [
+      "6 个系列 / 10 个模型",
+      "Token / Request",
+      "KV / State",
+      "分布图"
+    ]
+  },
+  {
+    "title": "持续会话显存实验 · 1h+1h",
+    "href": "continuous_pressure_1h.html",
+    "category": "实验",
+    "description": "1 小时预热、1 小时观测，比较三模型在不同到达率与保留策略下的结构性浪费。展示 108 组实验的达标范围、压力覆盖和失败诊断。",
+    "tags": [
+      "持续到达",
+      "3 个模型",
+      "108 组实验",
+      "压力与浪费"
+    ]
+  },
+  {
+    "title": "AgentX 多会话并发离线回放",
+    "href": "agentx_multi_session_replay.html",
+    "category": "工具",
+    "description": "导入真实 trace，固定种子抽样，让多个会话共享缓存池。支持批次回放与持续到达，交互比较稀疏／稠密保留策略的显存开销。",
+    "tags": [
+      "AgentX 真实 trace",
+      "1–128 会话",
+      "Qwen3.8 / Flash Next",
+      "Kimi K3 / DeepSeek V4 Pro",
+      "TP8",
+      "边界审计"
+    ]
+  }
+]
   </script>
 </body>
 

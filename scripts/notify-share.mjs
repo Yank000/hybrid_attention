@@ -17,7 +17,7 @@ if (process.env.DEPLOY_RESULT !== 'success') {
   const url = new URL(`share.html?id=${number}`, base);
   message = `✅ 分享已自动发布，无需人工审批。\n\n[打开分享文档](${url.href}) · [知识库首页](${base.href})\n\n编辑本 Issue 可更新文档；关闭本 Issue 可从网站撤下。浏览器可能需要稍后刷新缓存。`;
 } else if (status === 'rejected') {
-  message = `⚠️ 投稿未发布：${reason}\n\n请修改本 Issue 后保存，系统会自动重试。支持一个 UTF-8 自包含 HTML 或 PDF，最大 20 MiB。`;
+  message = `⚠️ 投稿未发布：${reason}\n\n请修改本 Issue 后保存，系统会自动重试。支持文档链接，或一个 UTF-8 自包含 HTML / PDF 附件（最大 20 MiB），一次选择一种。`;
 } else {
   message = 'ℹ️ 此条目当前未发布（Issue 已关闭、已移除，或不再符合分享表单格式）。网站清单已更新。';
 }

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   InvalidSubmission, MAX_FILE_BYTES, parseSubmission, parseAttachment,
-  decodeDocument, validateAttachmentRedirect, requestBytes, listOpenIssues, buildSite,
+  decodeDocument, validateAttachmentRedirect, validateDocumentLink, requestBytes, listOpenIssues, buildSite,
 } from '../scripts/build-shares.mjs';
 
 const HTML_URL = 'https://github.com/user-attachments/files/12345/note.html';
@@ -19,6 +19,11 @@ function issue(number = 1, overrides = {}) {
   };
 }
 function response(body, status = 200, headers = {}) { return new Response(body, { status, headers }); }
+function linkIssue(number = 10, url = 'https://example.com/document?version=2#section') {
+  return issue(number, { body: issue().body.replace(
+    `### 文档附件\n\n[note.html](${HTML_URL})`, `### 分享方式\n\n链接分享\n\n### 文档链接\n\n${url}`,
+  ) });
+}
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'knowledge-share-test-'));
   t.after(async () => {
@@ -195,4 +200,50 @@ test('API redirects cannot forward authentication and attachment redirect loops 
     fetchImpl: async () => { calls++; return response(null, 302, { location: HTML_URL }); },
   }), /redirect/);
   assert.equal(calls, 6);
+});
+
+test('link submissions accept HTTP/HTTPS and preserve queries and fragments', () => {
+  const item = parseSubmission(linkIssue());
+  assert.equal(item.shareType, 'link');
+  assert.equal(item.fileType, 'link');
+  assert.equal(item.url, 'https://example.com/document?version=2#section');
+  assert.equal(validateDocumentLink(' http://example.com/doc '), 'http://example.com/doc');
+  assert.equal(parseSubmission(issue()).shareType, 'attachment');
+});
+
+test('links reject script URLs, credentials, malformed addresses and ambiguous forms', () => {
+  for (const url of ['javascript:alert(1)', 'data:text/html,test', 'file:///tmp/x.html',
+    'https://[invalid', 'https://user:password@example.com/doc', 'https://example.com/a b', '',
+    'https://example.com/' + 'x'.repeat(4096)]) {
+    assert.throws(() => validateDocumentLink(url), InvalidSubmission);
+  }
+  assert.throws(() => parseSubmission(linkIssue(10, 'javascript:alert(1)')), InvalidSubmission);
+  assert.throws(() => parseSubmission(issue(10, { body: issue().body + '\n\n### 文档链接\n\nhttps://example.com' })), InvalidSubmission);
+  assert.throws(() => parseSubmission(issue(10, { body: issue().body + '\n\n### 分享方式\n\n链接分享' })), InvalidSubmission);
+  assert.throws(() => parseSubmission({ ...linkIssue(), body: linkIssue().body.replace('链接分享', '附件分享') }), InvalidSubmission);
+});
+
+test('link publication never fetches the external site and coexists with attachments', async t => {
+  const config = await fixture(t);
+  const requested = [];
+  const manifest = await buildSite({ ...config, issues: [issue(1), linkIssue(2), linkIssue(3, 'javascript:alert(1)')],
+    download: async url => { requested.push(url); return html; } });
+  assert.deepEqual(requested, [HTML_URL]);
+  assert.equal(manifest.shares.length, 2);
+  const item = manifest.shares.find(item => item.id === 2);
+  assert.equal(item.externalUrl, 'https://example.com/document?version=2#section');
+  assert.equal(item.href, 'share.html?id=2');
+  assert.equal(manifest.rejected[0].id, 3);
+  await assert.rejects(access(join(config.outputDir, 'shared/2')));
+  assert.ok((await readdir(join(config.outputDir, 'shared'))).includes('1'));
+});
+
+test('editing a submission can switch between attachment and link with a stable share URL', async t => {
+  const config = await fixture(t);
+  const first = await buildSite({ ...config, issues: [issue(1)], download: async () => html });
+  const secondOutput = join(config.root, 'second-site');
+  const second = await buildSite({ ...config, outputDir: secondOutput, issues: [linkIssue(1)], download: async () => { throw new Error('must not download'); } });
+  assert.equal(first.shares[0].href, second.shares[0].href);
+  assert.equal(second.shares[0].shareType, 'link');
+  await assert.rejects(access(join(secondOutput, 'shared/1')));
 });

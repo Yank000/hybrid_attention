@@ -36,14 +36,25 @@
           '该分享不存在、已撤下，或尚未部署完成。请等待投稿下的机器人发布结果后刷新。';
         return;
       }
-      if (!['html', 'pdf'].includes(item.fileType)) throw new Error('不支持的文档类型。');
+      if (!['html', 'pdf', 'link'].includes(item.fileType)) throw new Error('不支持的文档类型。');
       document.title = `${item.title} · 用户分享`;
       document.getElementById('share-title').textContent = item.title;
       document.getElementById('share-description').textContent = item.description;
-      document.getElementById('share-meta').textContent = `#${id} · ${item.author} · ${item.category} · ${item.fileType.toUpperCase()}`;
+      document.getElementById('share-meta').textContent = `#${id} · ${item.author} · ${item.category} · ${item.fileType === 'link' ? '文档链接' : item.fileType.toUpperCase()}`;
       const source = document.getElementById('source');
       source.href = `https://github.com/${data.repository}/issues/${id}`;
       source.hidden = false;
+      if (item.fileType === 'link') {
+        const url = new URL(item.externalUrl);
+        if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('文档链接格式不正确。');
+        const external = document.getElementById('external-link');
+        external.href = url.href;
+        external.hidden = false;
+        copy.hidden = false;
+        document.getElementById('share-notice').textContent = '此条目为外部文档链接。内容和访问权限由原网站管理，本知识库不托管其正文。';
+        status.textContent = `原文网站：${url.hostname}。点击“打开原文”访问文档。`;
+        return;
+      }
       if (item.fileType === 'html') {
         const documentData = await readJson(`shared/${id}/document.json`);
         if (typeof documentData.content !== 'string') throw new Error('HTML 文档数据不正确。');

@@ -43,7 +43,7 @@ jobs:
         run: node --test tests/*.test.mjs
       - name: Check browser scripts
         run: |
-          node --check docs/community.js
+          node --check docs/knowledge.js
           node --check docs/share.js
       - name: Configure Pages
         id: pages

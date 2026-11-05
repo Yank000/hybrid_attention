@@ -8,9 +8,23 @@ const MAX_SITE_BYTES = 800 * 1024 * 1024;
 const MAX_SHARED_BYTES = 200 * 1024 * 1024;
 const MAX_SHARES = 200;
 const CATEGORIES = new Set(['调研', '实验', '工具', '其他']);
-const FIELDS = ['文档标题', '文档简介', '文档分类', '文档标签（可选）', '文档附件'];
+const FIELDS = ['文档标题', '文档简介', '文档分类', '文档标签（可选）', '分享方式', '文档链接', '文档附件'];
 
 export class InvalidSubmission extends Error {}
+
+export function validateDocumentLink(value) {
+  const text = value.trim();
+  if (text.length > 4096 || /[\s\u0000-\u001f\u007f]/.test(text) || !/^https?:\/\//i.test(text)) {
+    throw new InvalidSubmission('文档链接须为完整的 HTTP 或 HTTPS 地址，不能包含空白字符。');
+  }
+  let url;
+  try { url = new URL(text); }
+  catch { throw new InvalidSubmission('文档链接格式不正确。'); }
+  if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) {
+    throw new InvalidSubmission('仅支持不含账号密码的 HTTP 或 HTTPS 文档链接。');
+  }
+  return url.href;
+}
 
 export function validateRepository(repository) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository || '')) {
@@ -80,12 +94,27 @@ export function parseSubmission(issue) {
   if (tags.length > 8 || tags.some(tag => tag.length > 30 || /[\r\n]/.test(tag))) {
     throw new InvalidSubmission('标签最多 8 个，每个最多 30 字，使用逗号分隔。');
   }
+  const optional = name => {
+    const value = fields.get(name) || '';
+    return value === '_No response_' ? '' : value;
+  };
+  const link = optional('文档链接');
+  const attachment = optional('文档附件');
+  const mode = optional('分享方式');
+  if (mode && !['链接分享', '附件分享'].includes(mode)) throw new InvalidSubmission('分享方式须为链接分享或附件分享。');
+  if (link && attachment) throw new InvalidSubmission('一次投稿只能选择文档链接或文档附件，请保留一种。');
+  // Legacy attachment submissions did not contain a mode field.
+  const linkMode = mode === '链接分享' || (!mode && Boolean(link));
+  if ((linkMode && attachment) || (mode === '附件分享' && link)) {
+    throw new InvalidSubmission('分享方式与填写内容不一致，请使用对应的投稿表单。');
+  }
   return {
     id: issue.number, title, description, category, tags,
     author: String(issue.user?.login || 'unknown'),
     createdAt: issue.created_at || null,
     updatedAt: issue.updated_at || null,
-    ...parseAttachment(fields.get('文档附件') || ''),
+    shareType: linkMode ? 'link' : 'attachment',
+    ...(linkMode ? { url: validateDocumentLink(link), fileType: 'link' } : parseAttachment(attachment)),
   };
 }
 
@@ -223,25 +252,31 @@ export async function buildSite({
     if (issue.pull_request || issue.state !== 'open' || seen.has(issue.number)) continue;
     seen.add(issue.number);
     let item;
-    let document;
+    let document = null;
     try {
       item = parseSubmission(issue);
       if (!item) continue;
-      const bytes = await download(item.url);
-      document = decodeDocument(bytes, item.fileType);
+      // External document links are metadata only. Never fetch arbitrary URLs
+      // in a privileged Actions runner or attempt to mirror a linked website.
+      if (item.shareType === 'attachment') {
+        const bytes = await download(item.url);
+        document = decodeDocument(bytes, item.fileType);
+      }
     } catch (error) {
       if (!(error instanceof InvalidSubmission)) throw error;
       rejected.push({ id: issue.number, reason: error.message });
       continue;
     }
     if (shares.length >= MAX_SHARES) throw new Error('More than 200 shares; increase capacity before publishing.');
-    total += Buffer.byteLength(document);
-    if (total > MAX_SHARED_BYTES) throw new Error('Shared documents exceed 200 MiB; refusing a partial publication.');
-    const directory = join(staging, 'shared', String(item.id));
-    await mkdir(directory, { recursive: true });
-    await writeFile(join(directory, item.fileType === 'html' ? 'document.json' : 'document.pdf'), document);
+    if (document !== null) {
+      total += Buffer.byteLength(document);
+      if (total > MAX_SHARED_BYTES) throw new Error('Shared documents exceed 200 MiB; refusing a partial publication.');
+      const directory = join(staging, 'shared', String(item.id));
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, item.fileType === 'html' ? 'document.json' : 'document.pdf'), document);
+    }
     const { url, ...record } = item;
-    shares.push({ ...record, href: `share.html?id=${item.id}` });
+    shares.push({ ...record, ...(item.shareType === 'link' ? { externalUrl: url } : {}), href: `share.html?id=${item.id}` });
   }
   shares.sort((a, b) => b.id - a.id);
   const manifest = { version: 1, repository, siteUrl, generatedAt: now, shares, rejected };

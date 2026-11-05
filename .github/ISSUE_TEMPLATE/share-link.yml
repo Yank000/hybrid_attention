@@ -1,0 +1,57 @@
+name: 分享文档链接
+description: 分享已有文档的网址，自动加入首页的调研、实验、工具等分类。
+title: "[分享] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交后自动构建发布，无需人工审批。分享卡片与首页原有文档一起展示。
+        仅保存链接，不复制或托管原网站内容。请确认读者有权访问目标文档。
+        编辑本 Issue 可更新条目；关闭 Issue 可从首页撤下。
+  - type: input
+    id: document-title
+    attributes:
+      label: 文档标题
+      description: 首页显示的标题，最多 120 字。
+    validations:
+      required: true
+  - type: dropdown
+    id: share-mode
+    attributes:
+      label: 分享方式
+      options:
+        - 链接分享
+      default: 0
+    validations:
+      required: true
+  - type: textarea
+    id: document-description
+    attributes:
+      label: 文档简介
+      description: 简要介绍文档内容，最多 1000 字。
+    validations:
+      required: true
+  - type: dropdown
+    id: document-category
+    attributes:
+      label: 文档分类
+      options:
+        - 调研
+        - 实验
+        - 工具
+        - 其他
+    validations:
+      required: true
+  - type: input
+    id: document-tags
+    attributes:
+      label: 文档标签（可选）
+      description: 使用中英文逗号分隔，最多 8 个，每个最多 30 字。
+  - type: input
+    id: document-link
+    attributes:
+      label: 文档链接
+      description: 粘贴完整的 HTTP/HTTPS 网址，不要填写 Markdown 链接或本地文件路径。
+      placeholder: https://example.com/document
+    validations:
+      required: true

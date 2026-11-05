@@ -1,0 +1,8 @@
+.share-tools { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+.share-submit { display: inline-block; padding: 7px 14px; border: 1px solid var(--green); border-radius: 8px; color: var(--green); text-decoration: none; font-size: 14px; }
+.share-submit-file { background: var(--green); color: white; }
+.share-refresh { padding: 7px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--green); font: inherit; font-size: 14px; }
+.share-submit:focus-visible, .share-refresh:focus-visible { outline: 3px solid #8da997; outline-offset: 3px; }
+.share-status, .share-meta { color: var(--muted); font-size: 13px; }
+.share-status { min-height: 22px; margin: 6px 0 18px; }
+.share-meta { margin-bottom: 16px; }

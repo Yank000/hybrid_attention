@@ -1,4 +1,4 @@
-name: 上传分享文档
+name: 上传文档附件
 description: 上传自包含 HTML 或 PDF，自动发布到知识库，无需人工审批。
 title: "[分享] "
 body:
@@ -15,6 +15,15 @@ body:
       label: 文档标题
       description: 显示在首页与分享页，最多 120 字。
       placeholder: 例如：混合注意力显存实验笔记
+    validations:
+      required: true
+  - type: dropdown
+    id: share-mode
+    attributes:
+      label: 分享方式
+      options:
+        - 附件分享
+      default: 0
     validations:
       required: true
   - type: textarea
