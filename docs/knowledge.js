@@ -1,11 +1,13 @@
 (() => {
   'use strict';
-  const builtIn = JSON.parse(document.getElementById('knowledge-pages').textContent);
+  const builtIn = JSON.parse(document.getElementById('knowledge-pages').textContent)
+    .map(page => ({ ...page, author: 'Yank000' }));
   const categories = ['调研', '实验', '工具', '其他'];
   const search = document.getElementById('search');
   const filters = document.getElementById('filters');
   const container = document.getElementById('pages');
   const status = document.getElementById('share-status');
+  const shareInstructions = status.textContent;
   const refresh = document.getElementById('share-refresh');
   const repository = document.querySelector('meta[name="share-repository"]').content;
   document.getElementById('share-submit').href = `https://github.com/${repository}/issues/new?template=share.yml`;
@@ -53,14 +55,15 @@
       time.setAttribute('datetime', page.createdAt);
       time.title = page.id ? '投稿时间' : '文档创建时间';
     }
-    heading.append(time);
+    const meta = element('div', 'card-meta');
+    meta.append(time, element('span', '', page.author));
+    heading.append(meta);
     const tags = element('div', 'tags');
     for (const tag of page.tags) tags.append(element('span', 'tag', tag));
     const open = element('div', 'open');
-    const action = external ? '访问文档链接' : page.id ? '阅读文档附件' : page.category === '工具' ? '打开工具' : '阅读文档';
+    const action = page.category === '工具' ? '打开工具' : '阅读文档';
     open.append(element('span', '', action), element('span', '', '↗'));
     node.append(heading, element('p', '', page.description));
-    if (page.id) node.append(element('div', 'share-meta', `${page.author} · ${external ? '链接' : page.fileType.toUpperCase() + ' 附件'} · #${page.id}`));
     const footer = element('div', 'card-footer');
     footer.append(tags, open);
     node.append(footer);
@@ -75,7 +78,7 @@
     if (selected && !activeCategories.includes(selected)) selected = null;
     const query = search.value.trim().toLocaleLowerCase();
     const visible = pages.filter(page => (!selected || page.category === selected) &&
-      [page.title, page.description, page.category, page.author || '', ...page.tags].join(' ').toLocaleLowerCase().includes(query));
+      [page.title, page.description, page.category, page.author, ...page.tags].join(' ').toLocaleLowerCase().includes(query));
     container.replaceChildren(...visible.map(card));
     // Reconcile controls without replacing a focused button during typing.
     const names = ['全部', ...activeCategories];
@@ -116,7 +119,7 @@
         typeof item.author === 'string' && Array.isArray(item.tags) && item.tags.every(tag => typeof tag === 'string') &&
         (item.fileType !== 'link' || safeExternal(item.externalUrl)));
       render();
-      status.textContent = shared.length ? `已同步 ${shared.length} 篇分享，与原有文档统一展示。` : '可分享链接或上传 HTML/PDF；投稿时请保留 Issue 标题的 [分享] 前缀。';
+      status.textContent = shareInstructions;
     } catch {
       status.textContent = '分享文档暂时同步失败，请稍后刷新。已显示的文档仍可使用。';
     } finally {

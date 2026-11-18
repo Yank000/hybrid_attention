@@ -6,6 +6,7 @@ import vm from 'node:vm';
 const index = await readFile(new URL('../docs/index.html', import.meta.url), 'utf8');
 const source = await readFile(new URL('../docs/knowledge.js', import.meta.url), 'utf8');
 const builtIn = JSON.parse(index.match(/<script id="knowledge-pages" type="application\/json">([\s\S]*?)<\/script>/)[1]);
+const shareInstructions = index.match(/<p id="share-status"[^>]*>([^<]+)<\/p>/)[1];
 
 class Node {
   constructor(tag = '') { this.tag = tag; this.children = []; this.events = {}; this.dataset = {}; this.attributes = {}; this.value = ''; }
@@ -28,6 +29,7 @@ async function boot(shares = [link, attachment], protocol = 'https:') {
   const nodes = new Map(['knowledge-pages', 'search', 'filters', 'pages', 'share-status', 'share-refresh',
     'share-submit', 'count', 'empty'].map(id => [id, new Node()]));
   nodes.get('knowledge-pages').textContent = JSON.stringify(builtIn);
+  nodes.get('share-status').textContent = shareInstructions;
   let current = shares;
   let failed = false;
   let requests = 0;
@@ -67,10 +69,18 @@ test('one chronological list mixes local creation times and share submission tim
     'share.html?id=11', 'cache_size_overview.html', 'mainstream_attention_arch.html',
     'hybrid_VRAM_management.html',
   ]);
-  const times = app.cards().map(card => card.children[0].children[2]);
+  const metadata = app.cards().map(card => card.children[0].children[2]);
+  const times = metadata.map(meta => meta.children[0]);
   assert.ok(times.every(time => time.tag === 'time' && time.attributes.datetime));
   assert.equal(times[0].textContent, '2026/11/05 15:32 UTC+8');
   assert.equal(times[3].attributes.datetime, attachment.createdAt);
+  assert.deepEqual(metadata.map(meta => meta.children[1].textContent), [
+    'alice', 'Yank000', 'Yank000', 'bob', 'Yank000', 'Yank000', 'Yank000',
+  ]);
+  assert.deepEqual(app.cards().map(card => card.children.at(-1).children[1].children[0].textContent), [
+    '阅读文档', '阅读文档', '打开工具', '打开工具', '阅读文档', '阅读文档', '阅读文档',
+  ]);
+  assert.ok(app.cards().every(card => !/#\d+|HTML 附件|· 链接/.test(card.textContent)));
   const external = app.cards().find(card => card.href === link.externalUrl);
   assert.equal(external.target, '_blank');
   assert.equal(external.rel, 'noopener noreferrer');
@@ -88,6 +98,8 @@ test('a single category filter, search, count and empty state apply to every doc
   app.search('alice');
   assert.equal(app.cards().length, 1);
   assert.equal(app.cards()[0].href, link.externalUrl);
+  app.search('Yank000');
+  assert.equal(app.cards().length, 3);
   app.search('does-not-exist');
   assert.equal(app.cards().length, 0);
   assert.equal(app.get('empty').hidden, false);
@@ -109,6 +121,7 @@ test('refresh reconciles new/removed entries and optional categories without dup
   const app = await boot();
   app.setShares([{ ...link, category: '其他' }]); await app.refresh();
   assert.equal(app.cards().length, 6);
+  assert.equal(app.get('share-status').textContent, shareInstructions);
   app.filter('其他'); assert.equal(app.cards().length, 1);
   app.setShares([]); await app.refresh();
   assert.equal(app.cards().length, 5);
