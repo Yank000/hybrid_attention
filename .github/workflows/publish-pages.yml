@@ -30,6 +30,7 @@ jobs:
       pages: read
     outputs:
       target_status: ${{ steps.build.outputs.target_status }}
+      target_id: ${{ steps.build.outputs.target_id }}
       target_reason_b64: ${{ steps.build.outputs.target_reason_b64 }}
     steps:
       - uses: actions/checkout@v4
@@ -81,7 +82,7 @@ jobs:
     if: >-
       always() && !cancelled() && github.event_name == 'issues' &&
       github.event.action != 'deleted' && github.event.action != 'transferred' &&
-      startsWith(github.event.issue.title, '[分享]')
+      (startsWith(github.event.issue.title, '[分享]') || startsWith(github.event.issue.title, '[替换附件]'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -99,6 +100,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           SHARE_STATUS: ${{ needs.build.outputs.target_status }}
+          SHARE_ID: ${{ needs.build.outputs.target_id }}
           SHARE_REASON_B64: ${{ needs.build.outputs.target_reason_b64 }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
           PAGES_BASE_URL: ${{ needs.deploy.outputs.page_url }}

@@ -118,6 +118,61 @@ export function parseSubmission(issue) {
   };
 }
 
+function collectSubmissions(issues, repository, rejected) {
+  const submissions = new Map();
+  const replacements = new Map();
+  const replacementIssues = [];
+  const seen = new Set();
+  const owner = repository.split('/')[0].toLowerCase();
+  const reject = (id, error) => {
+    if (!(error instanceof InvalidSubmission)) throw error;
+    rejected.push({ id, reason: error.message });
+  };
+  for (const issue of issues) {
+    if (issue.pull_request || issue.state !== 'open' || seen.has(issue.number)) continue;
+    seen.add(issue.number);
+    if (issue.title?.startsWith('[替换附件]')) {
+      replacementIssues.push(issue);
+      continue;
+    }
+    try {
+      const item = parseSubmission(issue);
+      if (item) submissions.set(item.id, item);
+    } catch (error) {
+      reject(issue.number, error);
+    }
+  }
+  for (const issue of replacementIssues) {
+    try {
+      const targetId = Number(/^\[替换附件\]\s+#([1-9]\d*)\s*$/.exec(issue.title)?.[1]);
+      const target = submissions.get(targetId);
+      if (!target || target.shareType !== 'attachment') {
+        throw new InvalidSubmission('请填写仍开放的原附件分享编号，标题格式为 [替换附件] #编号。');
+      }
+      const author = issue.user?.login;
+      if (!author || ![target.author.toLowerCase(), owner].includes(author.toLowerCase())) {
+        throw new InvalidSubmission('只有原投稿人或仓库所有者可以替换附件。');
+      }
+      if (!Number.isSafeInteger(issue.number) || issue.number <= targetId || !Number.isFinite(Date.parse(issue.created_at))) {
+        throw new InvalidSubmission('无法识别替换投稿的编号或提交时间。');
+      }
+      const body = issue.body || '';
+      if (body.length > 20000) throw new InvalidSubmission('投稿表单内容过长。');
+      const attachment = parseAttachment(body.replace(/<!--[\s\S]*?-->/g, ''));
+      if (attachment.url === target.url) throw new InvalidSubmission('请上传新的附件文件。');
+      const candidates = replacements.get(targetId) || [];
+      candidates.push({
+        ...target, ...attachment, author, replacementId: issue.number,
+        createdAt: issue.created_at, updatedAt: issue.updated_at || issue.created_at,
+      });
+      replacements.set(targetId, candidates);
+    } catch (error) {
+      reject(issue.number, error);
+    }
+  }
+  return { submissions, replacements, reject };
+}
+
 export function decodeDocument(bytes, fileType) {
   if (!bytes.length || bytes.length > MAX_FILE_BYTES) throw new InvalidSubmission('文件为空或超过 20 MiB。');
   if (fileType === 'pdf') {
@@ -237,7 +292,7 @@ export async function buildSite({
   const staging = `${output}.staging-${randomUUID()}`;
   const shares = [];
   const rejected = [];
-  const seen = new Set();
+  const { submissions, replacements, reject } = collectSubmissions(issues, repository, rejected);
   let total = 0;
   await mkdir(dirname(staging), { recursive: true });
   await cp(source, staging, {
@@ -248,37 +303,37 @@ export async function buildSite({
       return true;
     },
   });
-  for (const issue of issues) {
-    if (issue.pull_request || issue.state !== 'open' || seen.has(issue.number)) continue;
-    seen.add(issue.number);
-    let item;
+  for (const original of submissions.values()) {
+    let item = original;
     let document = null;
-    try {
-      item = parseSubmission(issue);
-      if (!item) continue;
-      // External document links are metadata only. Never fetch arbitrary URLs
-      // in a privileged Actions runner or attempt to mirror a linked website.
-      if (item.shareType === 'attachment') {
-        const bytes = await download(item.url);
-        document = decodeDocument(bytes, item.fileType);
+    // Links are metadata only. Failed replacement validation leaves the last valid attachment in place.
+    if (original.shareType === 'attachment') {
+      const candidates = replacements.get(original.id) || [];
+      candidates.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.replacementId - a.replacementId);
+      for (const candidate of [...candidates, original]) {
+        try {
+          document = decodeDocument(await download(candidate.url), candidate.fileType);
+          item = candidate;
+          break;
+        } catch (error) {
+          reject(candidate.replacementId ?? candidate.id, error);
+        }
       }
-    } catch (error) {
-      if (!(error instanceof InvalidSubmission)) throw error;
-      rejected.push({ id: issue.number, reason: error.message });
-      continue;
+      if (document === null) continue;
     }
     if (shares.length >= MAX_SHARES) throw new Error('More than 200 shares; increase capacity before publishing.');
     if (document !== null) {
       total += Buffer.byteLength(document);
       if (total > MAX_SHARED_BYTES) throw new Error('Shared documents exceed 200 MiB; refusing a partial publication.');
-      const directory = join(staging, 'shared', String(item.id));
+      const version = item.replacementId ? [String(item.replacementId)] : [];
+      const directory = join(staging, 'shared', String(item.id), ...version);
       await mkdir(directory, { recursive: true });
       await writeFile(join(directory, item.fileType === 'html' ? 'document.json' : 'document.pdf'), document);
     }
     const { url, ...record } = item;
     shares.push({ ...record, ...(item.shareType === 'link' ? { externalUrl: url } : {}), href: `share.html?id=${item.id}` });
   }
-  shares.sort((a, b) => b.id - a.id);
+  shares.sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0) || b.id - a.id);
   const manifest = { version: 1, repository, siteUrl, generatedAt: now, shares, rejected };
   await mkdir(join(staging, 'data'), { recursive: true });
   await writeFile(join(staging, 'data', 'shares.json'), JSON.stringify(manifest, null, 2) + '\n');
@@ -307,9 +362,10 @@ async function main() {
     const event = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, 'utf8'));
     const id = event.issue?.number;
     const rejected = manifest.rejected.find(item => item.id === id);
-    const status = manifest.shares.some(item => item.id === id) ? 'published' : rejected ? 'rejected' : 'removed';
+    const published = Number.isSafeInteger(id) && manifest.shares.find(item => item.id === id || item.replacementId === id);
+    const status = published ? 'published' : rejected ? 'rejected' : 'removed';
     await appendFile(process.env.GITHUB_OUTPUT,
-      `target_status=${status}\ntarget_reason_b64=${Buffer.from(rejected?.reason || '').toString('base64')}\n`);
+      `target_status=${status}\ntarget_id=${published?.id || ''}\ntarget_reason_b64=${Buffer.from(rejected?.reason || '').toString('base64')}\n`);
   }
 }
 

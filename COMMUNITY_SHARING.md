@@ -14,6 +14,14 @@
 
 分享地址为 `share.html?id=<Issue编号>`。编辑 Issue 会重新发布；关闭、删除或转移 Issue 后，下一次成功构建会撤下该条目。重新打开 Issue 会恢复。关闭 Issue 不会删除 GitHub 的原始公开附件。
 
+### 替换已分享的附件
+
+1. 打开附件阅读页，点右上角的“展开”，再点“替换附件”。
+2. 保留 GitHub 表单中预填的 `[替换附件] #编号`，上传一个新的 HTML、HTM 或 PDF。等附件链接出现后提交。
+3. 等待替换 Issue 收到自动发布回复。新文件通过校验后，原分享地址会显示新附件。首页会按这次替换的提交时间重新排序，并显示此次提交的 GitHub 账号。标题、简介、分类和标签继续从原分享 Issue 读取。
+
+原投稿人和仓库所有者可以替换附件。每次更新请新建一条替换 Issue，以便记录提交人和时间。网站只发布最新可用版本，GitHub 中已上传的原文件仍保留。关闭替换 Issue 会恢复上一个仍可用的版本。关闭原分享 Issue 会撤下整条分享。
+
 HTML 必须为 UTF-8、自包含单文件：CSS、JavaScript、图片应内嵌。不支持 ZIP 或本地资源目录。每个文件最大 20 MiB，最多发布 200 条，总分享文件预算 200 MiB，总站点预算 800 MiB。超出总预算会中止构建并保留线上版本，而不是发布缺少条目的列表。
 
 ## GitHub 一次性设置
@@ -34,6 +42,7 @@ HTML 必须为 UTF-8、自包含单文件：CSS、JavaScript、图片应内嵌�
 | 文件 | 用途 |
 | --- | --- |
 | `.github/ISSUE_TEMPLATE/share.yml` | 链接与附件统一投稿表单，顶部醒目提示保留标题前缀，并要求勾选确认 |
+| `.github/ISSUE_TEMPLATE/replace-attachment.md` | 为原分享提交新版附件 |
 | `.github/workflows/publish-pages.yml` | 测试、全量构建、部署、回复发布状态 |
 | `scripts/build-shares.mjs` | 读取全部未关闭 Issue，处理附件并生成 `_site` |
 | `scripts/notify-share.mjs` | 创建或更新同一条机器人状态回复 |

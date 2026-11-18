@@ -40,7 +40,8 @@
       document.title = `${item.title} · 用户分享`;
       document.getElementById('share-title').textContent = item.title;
       document.getElementById('share-description').textContent = item.description;
-      document.getElementById('share-meta').textContent = `#${id} · ${item.author} · ${item.category} · ${item.fileType === 'link' ? '文档链接' : item.fileType.toUpperCase()}`;
+      const meta = document.getElementById('share-meta');
+      meta.textContent = `#${id} · ${item.author} · ${item.category} · ${item.fileType === 'link' ? '文档链接' : item.fileType.toUpperCase()}`;
       const source = document.getElementById('source');
       source.href = `https://github.com/${data.repository}/issues/${id}`;
       source.hidden = false;
@@ -55,8 +56,25 @@
         status.textContent = `原文网站：${url.hostname}。点击“打开原文”访问文档。`;
         return;
       }
+      const uploadTime = Date.parse(item.createdAt);
+      if (Number.isFinite(uploadTime)) {
+        const formatted = new Intl.DateTimeFormat('zh-CN', {
+          timeZone: 'Asia/Hong_Kong',
+          year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+        }).format(uploadTime);
+        meta.textContent += ` · ${formatted} UTC+8`;
+      }
+      const replacement = document.getElementById('replace-attachment');
+      const replaceUrl = new URL(`https://github.com/${data.repository}/issues/new`);
+      replaceUrl.searchParams.set('template', 'replace-attachment.md');
+      replaceUrl.searchParams.set('title', `[替换附件] #${id}`);
+      replacement.href = replaceUrl.href;
+      replacement.hidden = false;
+      const directory = Number.isSafeInteger(item.replacementId) && item.replacementId > id ?
+        `shared/${id}/${item.replacementId}` : `shared/${id}`;
       if (item.fileType === 'html') {
-        const documentData = await readJson(`shared/${id}/document.json`);
+        const documentData = await readJson(`${directory}/document.json`);
         if (typeof documentData.content !== 'string') throw new Error('HTML 文档数据不正确。');
         // This prefix is parsed before all untrusted markup. The iframe has an
         // opaque origin: never add allow-same-origin to its sandbox.
@@ -66,7 +84,7 @@
         download.href = downloadUrl;
         download.download = `share-${id}.html`;
       } else {
-        frame.src = `shared/${id}/document.pdf`;
+        frame.src = `${directory}/document.pdf`;
         download.href = frame.src;
         download.download = `share-${id}.pdf`;
       }

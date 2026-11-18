@@ -6,6 +6,7 @@ const repository = validateRepository(process.env.GITHUB_REPOSITORY);
 const event = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, 'utf8'));
 const number = event.issue?.number;
 if (!Number.isSafeInteger(number) || number < 1) throw new Error('Missing issue number.');
+const isReplacement = event.issue.title?.startsWith('[替换附件]');
 const status = process.env.SHARE_STATUS;
 const reason = Buffer.from(process.env.SHARE_REASON_B64 || '', 'base64').toString('utf8');
 const runUrl = `https://github.com/${repository}/actions/runs/${process.env.GITHUB_RUN_ID}`;
@@ -14,12 +15,16 @@ if (process.env.DEPLOY_RESULT !== 'success') {
   message = `❌ 自动发布未成功完成。请查看 [Actions 运行记录](${runUrl}) 确认失败原因与线上状态，修复后重新运行。`;
 } else if (status === 'published') {
   const base = new URL(process.env.PAGES_BASE_URL.replace(/\/?$/, '/'));
-  const url = new URL(`share.html?id=${number}`, base);
-  message = `✅ 分享已自动发布，无需人工审批。\n\n[打开分享文档](${url.href}) · [知识库首页](${base.href})\n\n编辑本 Issue 可更新文档；关闭本 Issue 可从网站撤下。浏览器可能需要稍后刷新缓存。`;
+  const shareId = Number(process.env.SHARE_ID);
+  if (!Number.isSafeInteger(shareId) || shareId < 1) throw new Error('Missing published share ID.');
+  const url = new URL(`share.html?id=${shareId}`, base);
+  const result = isReplacement ? '附件已替换，原分享地址继续有效。' : '分享已自动发布，无需人工审批。';
+  message = `✅ ${result}\n\n[打开分享文档](${url.href}) · [知识库首页](${base.href})`;
 } else if (status === 'rejected') {
   message = `⚠️ 投稿未发布：${reason}\n\n请修改本 Issue 后保存，系统会自动重试。支持文档链接，或一个 UTF-8 自包含 HTML / PDF 附件（最大 20 MiB），一次选择一种。`;
 } else {
-  message = 'ℹ️ 此条目当前未发布（Issue 已关闭、已移除，或不再符合分享表单格式）。网站清单已更新。';
+  message = isReplacement ? 'ℹ️ 这次替换当前未生效。该 Issue 可能已关闭，或已有更新的附件版本。' :
+    'ℹ️ 此条目当前未发布（Issue 已关闭、已移除，或不再符合分享表单格式）。网站清单已更新。';
 }
 
 async function api(path, method = 'GET', body) {

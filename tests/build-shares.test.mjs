@@ -10,6 +10,7 @@ import {
 
 const HTML_URL = 'https://github.com/user-attachments/files/12345/note.html';
 const PDF_URL = 'https://github.com/user-attachments/files/12346/note.pdf';
+const REVISED_URL = 'https://github.com/user-attachments/files/12347/revised.html';
 function issue(number = 1, overrides = {}) {
   return {
     number, title: '[分享] 测试', state: 'open', user: { login: 'alice' },
@@ -23,6 +24,14 @@ function linkIssue(number = 10, url = 'https://example.com/document?version=2#se
   return issue(number, { body: issue().body.replace(
     `### 文档附件\n\n[note.html](${HTML_URL})`, `### 分享方式\n\n链接分享\n\n### 文档链接\n\n${url}`,
   ) });
+}
+function replacement(number, target, url, overrides = {}) {
+  return issue(number, {
+    title: `[替换附件] #${target}`,
+    body: `<!-- Upload one file below. -->\n\n[new file](${url})`,
+    created_at: '2026-11-18T10:00:00Z',
+    ...overrides,
+  });
 }
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'knowledge-share-test-'));
@@ -187,6 +196,55 @@ test('a malformed attachment URL rejects only its issue and does not block other
   ], download: async () => html });
   assert.deepEqual(manifest.shares.map(item => item.id), [2]);
   assert.equal(manifest.rejected[0].id, 1);
+});
+
+test('the latest replacement updates the author, time, and file at the same share address across rebuilds', async t => {
+  const config = await fixture(t);
+  const inputs = [
+    replacement(5, 1, PDF_URL, { user: { login: 'Test' }, created_at: '2026-11-18T11:00:00Z' }),
+    issue(1),
+    replacement(4, 1, REVISED_URL),
+    linkIssue(2),
+  ];
+  const pdf = Buffer.from('%PDF-1.7\n');
+  const first = await buildSite({ ...config, issues: inputs, download: async url => {
+    assert.equal(url, PDF_URL);
+    return pdf;
+  } });
+  const next = join(config.root, 'next-site');
+  const second = await buildSite({ ...config, outputDir: next, issues: [...inputs].reverse(), download: async () => pdf });
+  assert.deepEqual(first.shares, second.shares);
+  assert.deepEqual(first.shares.map(item => item.id), [1, 2]);
+  const item = second.shares[0];
+  assert.equal(item.href, 'share.html?id=1');
+  assert.equal(item.title, '测试文档');
+  assert.equal(item.author, 'Test');
+  assert.equal(item.createdAt, '2026-11-18T11:00:00Z');
+  assert.equal(item.fileType, 'pdf');
+  assert.equal(item.replacementId, 5);
+  assert.deepEqual(await readdir(join(next, 'shared/1')), ['5']);
+  assert.deepEqual(await readFile(join(next, 'shared/1/5/document.pdf')), pdf);
+});
+
+test('invalid and unauthorized replacements retain the previous valid attachment', async t => {
+  const config = await fixture(t);
+  const manifest = await buildSite({ ...config, issues: [
+    issue(1),
+    linkIssue(2),
+    replacement(3, 1, REVISED_URL),
+    replacement(4, 1, PDF_URL),
+    replacement(5, 1, 'https://github.com/user-attachments/files/555/new.html', { user: { login: 'stranger' } }),
+    replacement(6, 2, REVISED_URL),
+    replacement(7, 1, HTML_URL),
+    replacement(8, 1, REVISED_URL, { state: 'closed' }),
+  ], download: async url => {
+    assert.ok([PDF_URL, REVISED_URL].includes(url));
+    return html;
+  } });
+  assert.deepEqual(manifest.rejected.map(item => item.id).sort(), [4, 5, 6, 7]);
+  assert.equal(manifest.shares[0].replacementId, 3);
+  assert.equal(manifest.shares[0].author, 'alice');
+  assert.equal(JSON.parse(await readFile(join(config.outputDir, 'shared/1/3/document.json'), 'utf8')).content, html.toString());
 });
 
 test('API redirects cannot forward authentication and attachment redirect loops stop', async () => {
