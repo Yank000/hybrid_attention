@@ -1,12 +1,7 @@
 (() => {
   'use strict';
   const builtIn = JSON.parse(document.getElementById('knowledge-pages').textContent);
-  const sections = [
-    { name: '调研', description: '理解注意力架构、引擎实现与缓存尺寸。' },
-    { name: '实验', description: '查看真实工作负载下的显存分析与实验结果。' },
-    { name: '工具', description: '导入真实会话，调整配置并交互回放。' },
-    { name: '其他', description: '更多文档与参考资料。' },
-  ];
+  const categories = ['调研', '实验', '工具', '其他'];
   const search = document.getElementById('search');
   const filters = document.getElementById('filters');
   const container = document.getElementById('pages');
@@ -17,6 +12,11 @@
   let shared = [];
   let selected = null;
   let loading = false;
+  const dateFormat = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Hong_Kong',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  });
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -32,7 +32,11 @@
     } catch { return null; }
   }
 
-  function card(page, pages) {
+  function timestamp(page) {
+    return Date.parse(page.createdAt) || 0;
+  }
+
+  function card(page) {
     const node = element('a', 'card');
     const external = page.fileType === 'link' ? safeExternal(page.externalUrl) : null;
     node.href = page.id ? (external || `share.html?id=${page.id}`) : page.href;
@@ -40,43 +44,41 @@
       node.target = '_blank';
       node.rel = 'noopener noreferrer';
     }
-    const top = element('div', 'card-top');
-    top.append(element('span', 'number', String(pages.indexOf(page) + 1).padStart(2, '0') + ' /'), element('span', 'category', page.category));
+    const heading = element('div', 'card-heading');
+    heading.append(element('h2', '', page.title), element('span', 'category', page.category));
+    const date = timestamp(page);
+    const time = date ? element('time', 'card-time', dateFormat.format(date) + ' UTC+8') :
+      element('span', 'card-time', '时间未知');
+    if (date) {
+      time.setAttribute('datetime', page.createdAt);
+      time.title = page.id ? '投稿时间' : '文档创建时间';
+    }
+    heading.append(time);
     const tags = element('div', 'tags');
     for (const tag of page.tags) tags.append(element('span', 'tag', tag));
     const open = element('div', 'open');
     const action = external ? '访问文档链接' : page.id ? '阅读文档附件' : page.category === '工具' ? '打开工具' : '阅读文档';
     open.append(element('span', '', action), element('span', '', '↗'));
-    node.append(top, element('h3', '', page.title), element('p', '', page.description));
+    node.append(heading, element('p', '', page.description));
     if (page.id) node.append(element('div', 'share-meta', `${page.author} · ${external ? '链接' : page.fileType.toUpperCase() + ' 附件'} · #${page.id}`));
-    node.append(tags, open);
-    return node;
+    const footer = element('div', 'card-footer');
+    footer.append(tags, open);
+    node.append(footer);
+    const row = element('li', '');
+    row.append(node);
+    return row;
   }
 
   function render() {
-    // Keep the original five entries and their order; submissions join the same
-    // category grids, search, filter controls, count and empty state.
-    const pages = [...builtIn, ...shared];
-    const activeSections = sections.filter(section => section.name !== '其他' || pages.some(page => page.category === section.name));
-    if (selected && !activeSections.some(section => section.name === selected)) selected = null;
+    const pages = [...builtIn, ...shared].sort((a, b) => timestamp(b) - timestamp(a));
+    const activeCategories = categories.filter(category => category !== '其他' || pages.some(page => page.category === category));
+    if (selected && !activeCategories.includes(selected)) selected = null;
     const query = search.value.trim().toLocaleLowerCase();
     const visible = pages.filter(page => (!selected || page.category === selected) &&
       [page.title, page.description, page.category, page.author || '', ...page.tags].join(' ').toLocaleLowerCase().includes(query));
-    container.replaceChildren();
-    for (const section of activeSections) {
-      const items = visible.filter(page => page.category === section.name);
-      if ((selected && selected !== section.name) || (query && !items.length)) continue;
-      const group = element('section', 'section');
-      group.setAttribute('aria-label', section.name);
-      const heading = element('div', 'section-heading');
-      heading.append(element('h2', '', section.name), element('p', '', section.description), element('span', 'section-count', `${items.length} 篇`));
-      const grid = element('div', 'grid');
-      for (const page of items) grid.append(card(page, pages));
-      group.append(heading, grid);
-      container.append(group);
-    }
+    container.replaceChildren(...visible.map(card));
     // Reconcile controls without replacing a focused button during typing.
-    const names = ['全部', ...activeSections.map(section => section.name)];
+    const names = ['全部', ...activeCategories];
     for (const button of [...filters.children]) if (!names.includes(button.textContent)) button.remove();
     for (const name of names) {
       let button = [...filters.children].find(node => node.textContent === name);
@@ -110,7 +112,7 @@
       if (data.version !== 1 || !Array.isArray(data.shares)) throw new Error('分享清单格式不正确');
       shared = data.shares.filter(item => Number.isSafeInteger(item.id) && item.id > 0 &&
         ['html', 'pdf', 'link'].includes(item.fileType) && typeof item.title === 'string' &&
-        typeof item.description === 'string' && sections.some(section => section.name === item.category) &&
+        typeof item.description === 'string' && categories.includes(item.category) &&
         typeof item.author === 'string' && Array.isArray(item.tags) && item.tags.every(tag => typeof tag === 'string') &&
         (item.fileType !== 'link' || safeExternal(item.externalUrl)));
       render();

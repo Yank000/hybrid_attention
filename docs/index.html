@@ -175,41 +175,44 @@
       color: white
     }
 
-    .grid {
+    .document-list {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 20px
+      grid-template-columns: minmax(0, 1fr);
+      gap: 12px;
+      list-style: none;
+      margin: 0;
+      padding: 0
     }
 
     .card {
-      display: flex;
-      flex-direction: column;
-      position: relative;
+      display: block;
       background: var(--paper);
       border: 1px solid var(--line);
       border-radius: 14px;
-      padding: 26px;
+      padding: 18px 22px;
       text-decoration: none;
       color: var(--ink);
-      transition: transform .16s, border-color .16s, box-shadow .16s
+      overflow-wrap: anywhere;
+      transition: border-color .16s, box-shadow .16s
     }
 
     .card:hover {
-      transform: translateY(-4px);
       border-color: #8da997;
       box-shadow: 0 12px 30px #203b320d
     }
 
-    .card-top {
-      display: flex;
+    .card-heading {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
       align-items: center;
-      justify-content: space-between;
-      gap: 12px
+      gap: 8px 16px
     }
 
-    .number {
-      font: 13px Consolas, monospace;
-      color: var(--green)
+    .card-time {
+      color: var(--muted);
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap
     }
 
     .category {
@@ -221,23 +224,31 @@
     }
 
     .card h2 {
-      font-size: 23px;
+      font-size: 21px;
       line-height: 1.4;
       letter-spacing: -.02em;
-      margin: 24px 0 12px
+      margin: 0
     }
 
     .card p {
       color: var(--muted);
       font-size: 14px;
-      margin: 0 0 24px
+      margin: 6px 0 0
+    }
+
+    .card-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px 16px;
+      margin-top: 10px
     }
 
     .tags {
       display: flex;
       gap: 6px;
-      flex-wrap: wrap;
-      margin-top: auto
+      flex-wrap: wrap
     }
 
     .tag {
@@ -250,11 +261,8 @@
 
     .open {
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      border-top: 1px solid var(--line);
-      padding-top: 16px;
-      margin-top: 24px;
+      gap: 6px;
       color: var(--green);
       font-size: 13px;
       font-weight: 650
@@ -297,16 +305,6 @@
       outline-offset: 4px
     }
 
-    @media(max-width:900px) {
-      .grid {
-        grid-template-columns: 1fr 1fr
-      }
-
-      .card:last-child {
-        grid-column: 1/-1
-      }
-    }
-
     @media(max-width:600px) {
 
       header,
@@ -318,14 +316,6 @@
 
       .hero {
         padding-top: 42px
-      }
-
-      .grid {
-        grid-template-columns: 1fr
-      }
-
-      .card:last-child {
-        grid-column: auto
       }
 
       .tools {
@@ -348,7 +338,16 @@
       }
 
       .card {
-        padding: 22px
+        padding: 16px
+      }
+
+      .card-heading {
+        grid-template-columns: auto minmax(0, 1fr);
+        justify-items: start
+      }
+
+      .card h2 {
+        grid-column: 1 / -1
       }
     }
 
@@ -357,22 +356,6 @@
         transition: none
       }
 
-      .card:hover {
-        transform: none
-      }
-    }
-
-    .section { margin: 36px 0 48px }
-    .section-heading { display: flex; align-items: baseline; gap: 16px; border-bottom: 1px solid var(--line); margin-bottom: 20px; padding-bottom: 12px }
-    .section-heading h2 { margin: 0; font-size: 26px }
-    .section-heading p { margin: 0; font-size: 14px; color: var(--muted) }
-    .section-count { margin-left: auto; white-space: nowrap; color: var(--muted); font-size: 13px }
-    .card h3 { font-size: 23px; line-height: 1.4; margin: 20px 0 12px }
-    .card { overflow-wrap: anywhere }
-    @media(max-width:900px) { .card:last-child { grid-column: auto } }
-    @media(max-width:600px) {
-      .section-heading { flex-wrap: wrap; gap: 6px 14px }
-      .section-heading p { flex-basis: 100%; order: 3 }
     }
   </style>
 </head>
@@ -405,28 +388,29 @@
     </div>
     <p id="share-status" class="share-status" role="status" aria-live="polite">投稿时请保留 Issue 标题的 [分享] 前缀，链接与附件二选一。</p>
     <div id="filters" class="filters" role="group" aria-label="按主题筛选"></div>
-    <div id="pages"></div>
+    <ul id="pages" class="document-list" role="list" aria-label="文档列表，按时间从新到旧"></ul>
     <p id="empty" class="empty" hidden>没有匹配的页面。试试其他关键词，或切换到“全部”。</p>
     <noscript>
       <p>知识页面：</p>
       <ul>
-        <li><a href="mainstream_attention_arch.html">主流注意力架构与前缀匹配</a></li>
-        <li><a href="hybrid_VRAM_management.html">混合注意力的显存管理</a></li>
-        <li><a href="cache_size_overview.html">模型缓存对象尺寸 overview</a></li>
-        <li><a href="continuous_pressure_1h.html">持续会话显存实验 · 1h+1h</a></li>
-        <li><a href="agentx_multi_session_replay.html">AgentX 多会话并发离线回放</a></li>
+        <li><a href="continuous_pressure_1h.html">持续会话显存实验 · 1h+1h</a> <time datetime="2026-10-29T23:51:19+08:00">2026/10/29 23:51 UTC+8</time></li>
+        <li><a href="agentx_multi_session_replay.html">AgentX 多会话并发离线回放</a> <time datetime="2026-10-27T17:19:28+08:00">2026/10/27 17:19 UTC+8</time></li>
+        <li><a href="cache_size_overview.html">模型缓存对象尺寸 overview</a> <time datetime="2026-10-19T19:02:26+08:00">2026/10/19 19:02 UTC+8</time></li>
+        <li><a href="mainstream_attention_arch.html">主流注意力架构与前缀匹配</a> <time datetime="2026-10-15T17:19:26+08:00">2026/10/15 17:19 UTC+8</time></li>
+        <li><a href="hybrid_VRAM_management.html">混合注意力的显存管理</a> <time datetime="2026-10-09T12:23:20+08:00">2026/10/09 12:23 UTC+8</time></li>
       </ul>
     </noscript>
     <p class="footnote">页面中的缓存尺寸与默认配置以各文档标注的源码版本、模型配置和后端条件为准。理论有效负载、cache spec 页大小与实际显存分配需要分别理解。</p>
   </main>
   <footer><span>HYBRID ATTENTION / 技术知识库</span><span>本地 HTML · 导航与检索均可离线使用</span></footer>
 
-  <!-- 新增知识页：在下面的 JSON 数组中增加一条记录；格式示例见 README.md。 -->
+  <!-- 新增知识页时，用带时区的 ISO 8601 格式填写文件创建时间 createdAt。 -->
   <script id="knowledge-pages" type="application/json">
 [
   {
     "title": "主流注意力架构与前缀匹配",
     "href": "mainstream_attention_arch.html",
+    "createdAt": "2026-10-15T17:19:26+08:00",
     "category": "调研",
     "description": "从 Linear / Mamba、SWA 到压缩与动态稀疏，理解历史状态如何决定续算条件和前缀命中。",
     "tags": [
@@ -439,6 +423,7 @@
   {
     "title": "混合注意力的显存管理",
     "href": "hybrid_VRAM_management.html",
+    "createdAt": "2026-10-09T12:23:20+08:00",
     "category": "调研",
     "description": "对照 vLLM 与 SGLang，梳理 Qwen、Kimi 和 DeepSeek 的缓存分页、状态管理与混合前缀匹配。",
     "tags": [
@@ -451,6 +436,7 @@
   {
     "title": "模型缓存对象尺寸 overview",
     "href": "cache_size_overview.html",
+    "createdAt": "2026-10-19T19:02:26+08:00",
     "category": "调研",
     "description": "按模型系列与模型 ID 比较 KV、index key、recurrent 和 conv 的单 unit、单 page 大小及分布。",
     "tags": [
@@ -463,6 +449,7 @@
   {
     "title": "持续会话显存实验 · 1h+1h",
     "href": "continuous_pressure_1h.html",
+    "createdAt": "2026-10-29T23:51:19+08:00",
     "category": "实验",
     "description": "1 小时预热、1 小时观测，比较三模型在不同到达率与保留策略下的结构性浪费。展示 108 组实验的达标范围、压力覆盖和失败诊断。",
     "tags": [
@@ -475,6 +462,7 @@
   {
     "title": "AgentX 多会话并发离线回放",
     "href": "agentx_multi_session_replay.html",
+    "createdAt": "2026-10-27T17:19:28+08:00",
     "category": "工具",
     "description": "导入真实 trace，固定种子抽样，让多个会话共享缓存池。支持批次回放与持续到达，交互比较稀疏／稠密保留策略的显存开销。",
     "tags": [

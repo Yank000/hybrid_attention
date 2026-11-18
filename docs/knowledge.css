@@ -4,4 +4,4 @@
 .share-submit:focus-visible, .share-refresh:focus-visible { outline: 3px solid #8da997; outline-offset: 3px; }
 .share-status, .share-meta { color: var(--muted); font-size: 13px; }
 .share-status { min-height: 22px; margin: 6px 0 18px; }
-.share-meta { margin-bottom: 16px; }
+.share-meta { margin-top: 4px; }
