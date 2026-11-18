@@ -39,12 +39,16 @@
       if (!['html', 'pdf', 'link'].includes(item.fileType)) throw new Error('不支持的文档类型。');
       document.title = `${item.title} · 用户分享`;
       document.getElementById('share-title').textContent = item.title;
-      document.getElementById('share-description').textContent = item.description;
-      document.getElementById('share-meta').textContent = `#${id} · ${item.author} · ${item.category} · ${item.fileType === 'link' ? '文档链接' : item.fileType.toUpperCase()}`;
+      const intro = document.getElementById('attachment-intro');
+      const description = document.getElementById('share-description');
+      const meta = document.getElementById('share-meta');
+      description.textContent = item.description;
+      meta.textContent = `#${id} · ${item.author} · ${item.category} · ${item.fileType === 'link' ? '文档链接' : item.fileType.toUpperCase()}`;
       const source = document.getElementById('source');
       source.href = `https://github.com/${data.repository}/issues/${id}`;
       source.hidden = false;
       if (item.fileType === 'link') {
+        intro.replaceWith(meta, description);
         const url = new URL(item.externalUrl);
         if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('文档链接格式不正确。');
         const external = document.getElementById('external-link');
@@ -55,6 +59,7 @@
         status.textContent = `原文网站：${url.hostname}。点击“打开原文”访问文档。`;
         return;
       }
+      intro.hidden = false;
       if (item.fileType === 'html') {
         const documentData = await readJson(`shared/${id}/document.json`);
         if (typeof documentData.content !== 'string') throw new Error('HTML 文档数据不正确。');
