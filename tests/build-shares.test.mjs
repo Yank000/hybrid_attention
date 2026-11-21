@@ -48,14 +48,19 @@ async function fixture(t) {
 }
 const html = Buffer.from('<!doctype html><html><head><title>Demo</title></head><body><script>window.demo = true</script><h1>Hello</h1></body></html>');
 
-test('parses the issue form and handles CRLF, optional tags and legacy attachments', () => {
+test('parses old and new issue forms, ignores legacy tags, and handles CRLF', () => {
   const parsed = parseSubmission(issue());
   assert.equal(parsed.id, 1);
   assert.equal(parsed.fileType, 'html');
-  assert.deepEqual(parsed.tags, ['vLLM', 'KV Cache']);
+  assert.ok(!('tags' in parsed));
   assert.equal(parseSubmission(issue(1, { title: 'ordinary bug' })), null);
   assert.equal(parseSubmission(issue(1, { body: issue().body.replace(/\n/g, '\r\n') })).title, '测试文档');
-  assert.deepEqual(parseSubmission(issue(1, { body: issue().body.replace('vLLM，KV Cache', '_No response_') })).tags, []);
+  assert.deepEqual(parseSubmission(issue(1, {
+    body: issue().body.replace('### 文档标签（可选）\n\nvLLM，KV Cache\n\n', ''),
+  })), parsed);
+  assert.deepEqual(parseSubmission(issue(1, {
+    body: issue().body.replace('vLLM，KV Cache', 'x'.repeat(500)),
+  })), parsed);
   assert.equal(parseAttachment('[file](https://github.com/owner/repo/files/123/file.PDF)').fileType, 'pdf');
 });
 
@@ -64,7 +69,6 @@ test('rejects duplicate, incomplete, oversized and invalid metadata', () => {
     '', issue().body + '\n### 文档标题\nsecond',
     issue().body.replace('测试文档', 'x'.repeat(121)),
     issue().body.replace('调研', 'invalid'),
-    issue().body.replace('vLLM，KV Cache', Array.from({ length: 9 }, (_, i) => `tag${i}`).join(',')),
     issue().body.replace('测试简介', '_No response_'),
   ]) assert.throws(() => parseSubmission(issue(1, { body })), InvalidSubmission);
 });

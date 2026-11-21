@@ -46,27 +46,22 @@
       node.target = '_blank';
       node.rel = 'noopener noreferrer';
     }
+    const content = element('div', 'card-content');
     const heading = element('div', 'card-heading');
-    heading.append(element('h2', '', page.title), element('span', 'category', page.category));
+    const action = page.category === '工具' ? '打开工具' : '阅读文档';
+    heading.append(element('h2', '', page.title), element('span', 'category', page.category),
+      element('span', 'open', action + ' ↗'));
+    content.append(heading, element('p', '', page.description));
     const date = timestamp(page);
-    const time = date ? element('time', 'card-time', dateFormat.format(date) + ' UTC+8') :
+    const time = date ? element('time', 'card-time', dateFormat.format(date)) :
       element('span', 'card-time', '时间未知');
     if (date) {
       time.setAttribute('datetime', page.createdAt);
       time.title = page.id ? '投稿时间' : '文档创建时间';
     }
     const meta = element('div', 'card-meta');
-    meta.append(time, element('span', '', page.author));
-    heading.append(meta);
-    const tags = element('div', 'tags');
-    for (const tag of page.tags) tags.append(element('span', 'tag', tag));
-    const open = element('div', 'open');
-    const action = page.category === '工具' ? '打开工具' : '阅读文档';
-    open.append(element('span', '', action), element('span', '', '↗'));
-    node.append(heading, element('p', '', page.description));
-    const footer = element('div', 'card-footer');
-    footer.append(tags, open);
-    node.append(footer);
+    meta.append(time, element('span', '', authorName(page.author)));
+    node.append(content, meta);
     const row = element('li', '');
     row.append(node);
     return row;
@@ -78,7 +73,7 @@
     if (selected && !activeCategories.includes(selected)) selected = null;
     const query = search.value.trim().toLocaleLowerCase();
     const visible = pages.filter(page => (!selected || page.category === selected) &&
-      [page.title, page.description, page.category, page.author, ...page.tags].join(' ').toLocaleLowerCase().includes(query));
+      [page.title, page.description, page.category, page.author, authorName(page.author)].join(' ').toLocaleLowerCase().includes(query));
     container.replaceChildren(...visible.map(card));
     // Reconcile controls without replacing a focused button during typing.
     const names = ['全部', ...activeCategories];
@@ -116,7 +111,7 @@
       shared = data.shares.filter(item => Number.isSafeInteger(item.id) && item.id > 0 &&
         ['html', 'pdf', 'link'].includes(item.fileType) && typeof item.title === 'string' &&
         typeof item.description === 'string' && categories.includes(item.category) &&
-        typeof item.author === 'string' && Array.isArray(item.tags) && item.tags.every(tag => typeof tag === 'string') &&
+        typeof item.author === 'string' &&
         (item.fileType !== 'link' || safeExternal(item.externalUrl)));
       render();
       status.textContent = shareInstructions;

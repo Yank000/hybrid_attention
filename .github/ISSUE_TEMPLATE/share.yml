@@ -62,12 +62,6 @@ body:
     validations:
       required: true
   - type: input
-    id: document-tags
-    attributes:
-      label: 文档标签（可选）
-      description: 使用中英文逗号分隔，最多 8 个，每个最多 30 字。
-      placeholder: vLLM, KV Cache
-  - type: input
     id: document-link
     attributes:
       label: 文档链接

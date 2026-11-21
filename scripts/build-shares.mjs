@@ -8,7 +8,7 @@ const MAX_SITE_BYTES = 800 * 1024 * 1024;
 const MAX_SHARED_BYTES = 200 * 1024 * 1024;
 const MAX_SHARES = 200;
 const CATEGORIES = new Set(['调研', '实验', '工具', '其他']);
-const FIELDS = ['文档标题', '文档简介', '文档分类', '文档标签（可选）', '分享方式', '文档链接', '文档附件'];
+const FIELDS = ['文档标题', '文档简介', '文档分类', '分享方式', '文档链接', '文档附件'];
 
 export class InvalidSubmission extends Error {}
 
@@ -89,11 +89,6 @@ export function parseSubmission(issue) {
     throw new InvalidSubmission('文档简介长度须为 1–1000 字。');
   }
   if (!CATEGORIES.has(category)) throw new InvalidSubmission('文档分类须为调研、实验、工具或其他。');
-  const tagText = fields.get('文档标签（可选）') || '';
-  const tags = tagText === '_No response_' ? [] : [...new Set(tagText.split(/[,，]/).map(tag => tag.trim()).filter(Boolean))];
-  if (tags.length > 8 || tags.some(tag => tag.length > 30 || /[\r\n]/.test(tag))) {
-    throw new InvalidSubmission('标签最多 8 个，每个最多 30 字，使用逗号分隔。');
-  }
   const optional = name => {
     const value = fields.get(name) || '';
     return value === '_No response_' ? '' : value;
@@ -109,7 +104,7 @@ export function parseSubmission(issue) {
     throw new InvalidSubmission('分享方式与填写内容不一致，请使用对应的投稿表单。');
   }
   return {
-    id: issue.number, title, description, category, tags,
+    id: issue.number, title, description, category,
     author: String(issue.user?.login || 'unknown'),
     createdAt: issue.created_at || null,
     updatedAt: issue.updated_at || null,

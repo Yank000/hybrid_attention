@@ -41,7 +41,7 @@
       document.getElementById('share-title').textContent = item.title;
       document.getElementById('share-description').textContent = item.description;
       const meta = document.getElementById('share-meta');
-      meta.textContent = `#${id} · ${item.author} · ${item.category} · ${item.fileType === 'link' ? '文档链接' : item.fileType.toUpperCase()}`;
+      meta.textContent = `#${id} · ${authorName(item.author)} · ${item.category} · ${item.fileType === 'link' ? '文档链接' : item.fileType.toUpperCase()}`;
       const source = document.getElementById('source');
       source.href = `https://github.com/${data.repository}/issues/${id}`;
       source.hidden = false;

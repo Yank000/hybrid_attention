@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
 const source = await readFile(new URL('../docs/share.js', import.meta.url), 'utf8');
+const authorNames = await readFile(new URL('../docs/author-names.js', import.meta.url), 'utf8');
 
 async function openReader(fileType, replacementId) {
   const nodes = new Map();
@@ -12,7 +13,8 @@ async function openReader(fileType, replacementId) {
     if (!nodes.has(id)) nodes.set(id, { hidden: true, addEventListener() {} });
     return nodes.get(id);
   };
-  vm.runInNewContext(source, {
+  const namesFixture = authorNames.replace(/const names = \{[\s\S]*?\};/, "const names = { editor: '测试姓名' };");
+  vm.runInNewContext(namesFixture + '\n' + source, {
     document: { getElementById: element },
     window: { addEventListener() {} },
     location: { search: '?id=4', protocol: 'https:' },
@@ -36,7 +38,7 @@ test('attachment reader opens the active revision and targets the original share
   const html = await openReader('html', 7);
   assert.deepEqual(html.requests, ['data/shares.json', 'shared/4/7/document.json']);
   assert.match(html.element('document').srcdoc, /<h1>New attachment<\/h1>/);
-  assert.match(html.element('share-meta').textContent, /editor.*2026\/11\/18 19:00 UTC\+8/);
+  assert.match(html.element('share-meta').textContent, /测试姓名.*2026\/11\/18 19:00 UTC\+8/);
   const replace = html.element('replace-attachment');
   const url = new URL(replace.href);
   assert.equal(replace.hidden, false);

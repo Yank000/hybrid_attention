@@ -5,6 +5,7 @@ import vm from 'node:vm';
 
 const index = await readFile(new URL('../docs/index.html', import.meta.url), 'utf8');
 const source = await readFile(new URL('../docs/knowledge.js', import.meta.url), 'utf8');
+const authorNames = await readFile(new URL('../docs/author-names.js', import.meta.url), 'utf8');
 const builtIn = JSON.parse(index.match(/<script id="knowledge-pages" type="application\/json">([\s\S]*?)<\/script>/)[1]);
 const shareInstructions = index.match(/<p id="share-status"[^>]*>([^<]+)<\/p>/)[1];
 
@@ -22,7 +23,7 @@ const link = { id: 10, fileType: 'link', externalUrl: 'https://example.com/notes
   title: '共享调研链接', description: 'prefix 技术笔记', category: '调研', author: 'alice', tags: ['Link'],
   createdAt: '2026-11-05T07:32:01Z' };
 const attachment = { id: 11, fileType: 'html', title: '共享工具附件', description: 'replay 工具',
-  category: '工具', author: 'bob', tags: ['HTML'], createdAt: '2026-10-27T08:30:00Z', updatedAt: '2026-11-06T00:00:00Z' };
+  category: '工具', author: 'bob', createdAt: '2026-10-27T08:30:00Z', updatedAt: '2026-11-06T00:00:00Z' };
 const tick = () => new Promise(done => setImmediate(done));
 
 async function boot(shares = [link, attachment], protocol = 'https:') {
@@ -33,7 +34,8 @@ async function boot(shares = [link, attachment], protocol = 'https:') {
   let current = shares;
   let failed = false;
   let requests = 0;
-  vm.runInNewContext(source, {
+  const namesFixture = authorNames.replace(/const names = \{[\s\S]*?\};/, "const names = { ALICE: '测试姓名' };");
+  vm.runInNewContext(namesFixture + '\n' + source, {
     document: { getElementById: id => nodes.get(id), createElement: tag => new Node(tag), querySelector: () => ({ content: 'Yank000/hybrid_attention' }) },
     location: { protocol }, URL,
     fetch: async () => { requests++; if (failed) throw new Error('outage'); return { ok: true, json: async () => ({ version: 1, shares: current }) }; },
@@ -69,16 +71,16 @@ test('one chronological list mixes local creation times and share submission tim
     'share.html?id=11', 'cache_size_overview.html', 'mainstream_attention_arch.html',
     'hybrid_VRAM_management.html',
   ]);
-  const metadata = app.cards().map(card => card.children[0].children[2]);
+  const metadata = app.cards().map(card => card.children[1]);
   const times = metadata.map(meta => meta.children[0]);
   assert.ok(times.every(time => time.tag === 'time' && time.attributes.datetime));
-  assert.equal(times[0].textContent, '2026/11/05 15:32 UTC+8');
+  assert.equal(times[0].textContent, '2026/11/05 15:32');
   assert.equal(times[3].attributes.datetime, attachment.createdAt);
   assert.deepEqual(metadata.map(meta => meta.children[1].textContent), [
-    'alice', 'Yank000', 'Yank000', 'bob', 'Yank000', 'Yank000', 'Yank000',
+    '测试姓名', 'Yank000', 'Yank000', 'bob', 'Yank000', 'Yank000', 'Yank000',
   ]);
-  assert.deepEqual(app.cards().map(card => card.children.at(-1).children[1].children[0].textContent), [
-    '阅读文档', '阅读文档', '打开工具', '打开工具', '阅读文档', '阅读文档', '阅读文档',
+  assert.deepEqual(app.cards().map(card => card.children[0].children[0].children[2].textContent), [
+    '阅读文档 ↗', '阅读文档 ↗', '打开工具 ↗', '打开工具 ↗', '阅读文档 ↗', '阅读文档 ↗', '阅读文档 ↗',
   ]);
   assert.ok(app.cards().every(card => !/#\d+|HTML 附件|· 链接/.test(card.textContent)));
   const external = app.cards().find(card => card.href === link.externalUrl);
@@ -98,6 +100,8 @@ test('a single category filter, search, count and empty state apply to every doc
   app.search('alice');
   assert.equal(app.cards().length, 1);
   assert.equal(app.cards()[0].href, link.externalUrl);
+  app.search('测试姓名');
+  assert.equal(app.cards()[0].href, link.externalUrl);
   app.search('Yank000');
   assert.equal(app.cards().length, 3);
   app.search('does-not-exist');
@@ -112,7 +116,7 @@ test('unsafe external links are excluded and untrusted titles remain literal tex
   const title = '<img src=x onerror=alert(1)>';
   const app = await boot([{ ...link, title }, { ...link, id: 99, externalUrl: 'javascript:alert(1)' }]);
   assert.equal(app.cards().length, 6);
-  const heading = app.cards().find(card => card.href === link.externalUrl).children[0].children[0];
+  const heading = app.cards().find(card => card.href === link.externalUrl).children[0].children[0].children[0];
   assert.equal(heading.textContent, title);
   assert.equal(heading.children.length, 0);
 });

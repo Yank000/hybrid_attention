@@ -13,8 +13,7 @@
      "href": "new_topic.html",
      "createdAt": "2026-11-18T14:30:00+08:00",
      "category": "调研",
-     "description": "用一两句话说明本页解决的问题。",
-     "tags": ["主题一", "模型或引擎"]
+     "description": "用一两句话说明本页解决的问题。"
    }
    ```
 
@@ -22,6 +21,10 @@
 4. 在新页面加入返回入口：`<a href="index.html">← 返回知识库首页</a>`。
 
 JSON 不能含注释或末尾逗号。页面使用相对路径，文件名改变时需要同步更新 `href`。若需支持禁用 JavaScript 的浏览器，同时更新首页的 `<noscript>` 链接列表。
+
+## 作者姓名
+
+在 [author-names.js](author-names.js) 的 `names` 表中按 `'GitHub账号': '真实姓名'` 格式填写。本地文档使用 `Yank000`，Workflow 分享使用投稿账号。首页和分享阅读页共用这份表，账号忽略大小写，未填写姓名时显示账号。
 
 ## 内嵌图片
 
