@@ -280,7 +280,9 @@
         </svg><input id="search" type="search" placeholder="搜索标题、模型或主题…" aria-label="搜索知识页面"></label><span id="count"
         class="muted" role="status" aria-live="polite"></span></div>
     <div class="share-tools" aria-label="分享文档">
-      <a id="share-submit" class="share-submit" href="https://github.com/Yank000/hybrid_attention/issues/new?template=share.yml" target="_blank" rel="noopener noreferrer">分享文档（链接 / 附件）↗</a>
+      <a id="share-submit" class="share-submit"
+        href="https://github.com/Yank000/hybrid_attention/issues/new?template=share.yml" target="_blank"
+        rel="noopener noreferrer">分享文档（链接 / 附件）↗</a>
       <button id="share-refresh" class="share-refresh" type="button">刷新文档</button>
     </div>
     <p id="share-status" class="share-status" role="status" aria-live="polite">投稿时请保留 Issue 标题的 [分享] 前缀，链接与附件二选一。</p>
@@ -291,25 +293,30 @@
       <p>知识页面：</p>
       <ul class="document-list" role="list">
         <li><a class="card" href="continuous_pressure_1h.html">
-          <h2>持续会话显存实验 · 1h+1h</h2>
-          <div class="card-meta"><time class="card-time" datetime="2026-10-29T23:51:19+08:00">2026/10/29 23:51</time><span>Yank000</span></div>
-        </a></li>
+            <h2>持续会话显存实验 · 1h+1h</h2>
+            <div class="card-meta"><time class="card-time" datetime="2026-10-29T23:51:19+08:00">2026/10/29
+                23:51</time><span>Yank000</span></div>
+          </a></li>
         <li><a class="card" href="agentx_multi_session_replay.html">
-          <h2>AgentX 多会话并发离线回放</h2>
-          <div class="card-meta"><time class="card-time" datetime="2026-10-27T17:19:28+08:00">2026/10/27 17:19</time><span>Yank000</span></div>
-        </a></li>
+            <h2>AgentX 多会话并发离线回放</h2>
+            <div class="card-meta"><time class="card-time" datetime="2026-10-27T17:19:28+08:00">2026/10/27
+                17:19</time><span>Yank000</span></div>
+          </a></li>
         <li><a class="card" href="cache_size_overview.html">
-          <h2>模型缓存对象尺寸 overview</h2>
-          <div class="card-meta"><time class="card-time" datetime="2026-10-19T19:02:26+08:00">2026/10/19 19:02</time><span>Yank000</span></div>
-        </a></li>
+            <h2>模型缓存对象尺寸 overview</h2>
+            <div class="card-meta"><time class="card-time" datetime="2026-10-19T19:02:26+08:00">2026/10/19
+                19:02</time><span>Yank000</span></div>
+          </a></li>
         <li><a class="card" href="mainstream_attention_arch.html">
-          <h2>主流注意力架构与前缀匹配</h2>
-          <div class="card-meta"><time class="card-time" datetime="2026-10-15T17:19:26+08:00">2026/10/15 17:19</time><span>Yank000</span></div>
-        </a></li>
+            <h2>主流注意力架构与前缀匹配</h2>
+            <div class="card-meta"><time class="card-time" datetime="2026-10-15T17:19:26+08:00">2026/10/15
+                17:19</time><span>Yank000</span></div>
+          </a></li>
         <li><a class="card" href="hybrid_VRAM_management.html">
-          <h2>混合注意力的显存管理</h2>
-          <div class="card-meta"><time class="card-time" datetime="2026-10-09T12:23:20+08:00">2026/10/09 12:23</time><span>Yank000</span></div>
-        </a></li>
+            <h2>混合注意力的显存管理</h2>
+            <div class="card-meta"><time class="card-time" datetime="2026-10-09T12:23:20+08:00">2026/10/09
+                12:23</time><span>Yank000</span></div>
+          </a></li>
       </ul>
     </noscript>
     <p class="footnote">页面中的缓存尺寸与默认配置以各文档标注的源码版本、模型配置和后端条件为准。理论有效负载、cache spec 页大小与实际显存分配需要分别理解。</p>
@@ -324,7 +331,7 @@
     "href": "mainstream_attention_arch.html",
     "createdAt": "2026-10-15T17:19:26+08:00",
     "category": "调研",
-    "description": "比较 Linear / Mamba、SWA、CSA / QSA 的历史状态，理解续算条件与前缀缓存命中。"
+    "description": "比较 Linear / Mamba、SWA、压缩与动态稀疏的历史状态，理解续算条件与前缀缓存命中。"
   },
   {
     "title": "混合注意力的显存管理",
@@ -338,7 +345,7 @@
     "href": "cache_size_overview.html",
     "createdAt": "2026-10-19T19:02:26+08:00",
     "category": "调研",
-    "description": "比较 6 个系列共 10 个模型的 KV、index key、recurrent 和 conv 尺寸，图示按 token 或请求计量的单元与缓存页大小。"
+    "description": "比较不同模型的 KV、index key、recurrent 和 conv 尺寸，图示按 token 或请求计量的缓存单元与页大小分布。"
   },
   {
     "title": "持续会话显存实验 · 1h+1h",
@@ -352,7 +359,7 @@
     "href": "agentx_multi_session_replay.html",
     "createdAt": "2026-10-27T17:19:28+08:00",
     "category": "工具",
-    "description": "从真实 AgentX trace 固定种子抽样，批次或持续回放 1–128 个会话，比较 Qwen3.8、Flash Next、Kimi K3 和 DeepSeek V4 Pro 在 TP8 下不同缓存保留策略的显存开销。"
+    "description": "导入真实 trace，固定种子抽样，支持批次重放与持续到达，比较 Qwen3.8 Flash Next、Kimi K3 和 DeepSeek V4 Pro 在 TP8 下不同缓存保留策略的显存开销。"
   }
 ]
   </script>
